@@ -201,9 +201,13 @@ function clamp(value: number, min: number, max: number): number {
 }
 
 function parseRequest(input: Record<string, unknown>): Required<ScrapeRequest> {
+  const rawQuery = typeof input.query === "string" ? input.query.trim() : "";
+  // If the search bar is empty, default to "coilovers" so the feed always populates
+  const finalQuery = rawQuery.length > 0 ? rawQuery.slice(0, 120) : "coilovers";
+
   return {
-    query: typeof input.query === "string" && input.query.trim() !== "" ? input.query.trim().slice(0, 120) : "wheels",
-    maxDistance: 2500, // Bypass hard distance dropouts
+    query: finalQuery,
+    maxDistance: 2500,
     minDealScore: 1,
     originLat: typeof input.originLat === "number" ? input.originLat : DEFAULT_ORIGIN.lat,
     originLng: typeof input.originLng === "number" ? input.originLng : DEFAULT_ORIGIN.lng,
