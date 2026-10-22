@@ -112,7 +112,7 @@ function parseCraigslist(html: string, query: string): ListingDraft[] {
     if (!pid || !title || price === null) return;
     if (!Number.isFinite(lat) || !Number.isFinite(lng) || Number.isNaN(posted.getTime())) return;
 
-    const hood = cleanText(row.find(".result-hood").text()).replace(/^\(\vert{}\)$/g, "");
+    const hood = cleanText(row.find(".result-hood").text()).replace(/^\(|\)$/g, "");
 
     // Extract Craigslist image ID or build clean placeholder
     const imgIds = row.attr("data-ids");
@@ -347,4 +347,59 @@ async function runScrape(request: Required<ScrapeRequest>): Promise<ScrapeRespon
       sourcePlatform: draft.sourcePlatform,
       description: draft.description,
       dealScore: verdict.isScam ? Math.min(baseScore, SCAM_SCORE_CAP) : baseScore,
-      is
+      isScam: verdict.isScam,
+      scamReasoning: verdict.reasoning,
+      timestamp: draft.timestamp,
+      marketMedian: median,
+      url: draft.url,
+    } as Listing;
+  });
+
+  const listings = enriched
+    .filter(
+      (listing) =>
+        (request.maxDistance >= ANY_DISTANCE || listing.distanceMiles <= request.maxDistance) &&
+        listing.dealScore >= request.minDealScore,
+    )
+    .sort(
+      (a, b) =>
+        b.dealScore - a.dealScore ||
+        new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime(),
+    );
+
+  const meta: ScrapeMeta = {
+    totalScraped: drafts.length,
+    returned: listings.length,
+    scamCount: listings.filter((listing) => listing.isScam).length,
+    durationMs: Date.now() - startedAt,
+    scrapedAt: new Date().toISOString(),
+    origin: {
+      label:
+        request.originLat === DEFAULT_ORIGIN.lat && request.originLng === DEFAULT_ORIGIN.lng
+          ? DEFAULT_ORIGIN.label
+          : `${request.originLat.toFixed(2)}, ${request.originLng.toFixed(2)}`,
+      lat: request.originLat,
+      lng: request.originLng,
+    },
+    sources,
+  };
+
+  return { listings, meta };
+}
+
+export async function POST(req: Request) {
+  let body: unknown;
+  try {
+    body = await req.json();
+  } catch {
+    return NextResponse.json({ error: "Request body must be valid JSON." }, { status: 400 });
+  }
+  const result = await runScrape(parseRequest(body as Record<string, unknown>));
+  return NextResponse.json(result, { headers: { "Cache-Control": "no-store" } });
+}
+
+export async function GET(req: Request) {
+  const params = Object.fromEntries(new URL(req.url).searchParams.entries());
+  const result = await runScrape(parseRequest(params));
+  return NextResponse.json(result, { headers: { "Cache-Control": "no-store" } });
+}
