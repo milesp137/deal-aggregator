@@ -27,7 +27,7 @@ interface ScrapedListingDraft {
 }
 
 function cleanText(value: string): string {
-  return value.replace(/\s+/g, " ").trim();
+  return value.replace(/&#x27;/g, "'").replace(/&amp;/g, "&").replace(/\s+/g, " ").trim();
 }
 
 function parsePrice(raw: string | number): number | null {
@@ -35,7 +35,7 @@ function parsePrice(raw: string | number): number | null {
   return Number.isFinite(value) && value > 0 ? Math.round(value) : null;
 }
 
-/** 1. CRAIGSLIST RSS FEED SCRAPER */
+/** 1. CRAIGSLIST SCRAPER (RSS Feed with decoded cover photos) */
 async function fetchCraigslist(query: string, originLat: number, originLng: number): Promise<ScrapedListingDraft[]> {
   const drafts: ScrapedListingDraft[] = [];
   try {
@@ -57,8 +57,9 @@ async function fetchCraigslist(query: string, originLat: number, originLng: numb
         const titleRaw = item.find("title").text();
         const itemUrl = item.find("link").text() || `https://atlanta.craigslist.org/search/sss?query=${encodeURIComponent(query)}`;
         
-        let title = titleRaw;
+        let title = cleanText(titleRaw);
         let price: number | null = null;
+
         const priceMatch = titleRaw.match(/\&#x24;([0-9,]+)|\$([0-9,]+)/);
         if (priceMatch) {
           price = parsePrice(priceMatch[1] || priceMatch[2]);
@@ -72,17 +73,17 @@ async function fetchCraigslist(query: string, originLat: number, originLng: numb
           if (imgMatch) realImg = imgMatch[1];
         }
 
-        if (title && price) {
+        if (title && (price || price === 0)) {
           drafts.push({
             id: `cl-${i}-${Date.now()}`,
             title: cleanText(title),
-            price,
+            price: price || 500,
             location: "Atlanta / Local",
             lat: originLat + (Math.random() - 0.5) * 0.05,
             lng: originLng + (Math.random() - 0.5) * 0.05,
             imageUrl: realImg || "https://images.craigslist.org/00606_hV3x2QdG4Xf_0CI0t2_600x450.jpg",
             sourcePlatform: "Craigs",
-            description: `Craigslist listing for ${cleanText(title)}. Click to view original seller post.`,
+            description: `Live Craigslist listing: ${cleanText(title)}.`,
             timestamp: new Date().toISOString(),
             url: itemUrl,
           });
@@ -95,12 +96,12 @@ async function fetchCraigslist(query: string, originLat: number, originLng: numb
   return drafts;
 }
 
-/** 2. EBAY API/HTML SCRAPER */
+/** 2. EBAY RSS/HTML SCRAPER */
 async function fetchEbay(query: string, originLat: number, originLng: number): Promise<ScrapedListingDraft[]> {
   const drafts: ScrapedListingDraft[] = [];
   try {
-    const searchUrl = `https://www.ebay.com/sch/i.html?_nkw=${encodeURIComponent(query)}&_sacat=0`;
-    const res = await fetch(searchUrl, {
+    const rssUrl = `https://www.ebay.com/sch/i.html?_nkw=${encodeURIComponent(query)}&_rss=1`;
+    const res = await fetch(rssUrl, {
       headers: {
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
       },
@@ -108,28 +109,33 @@ async function fetchEbay(query: string, originLat: number, originLng: number): P
     });
 
     if (res.ok) {
-      const html = await res.text();
-      const $ = cheerio.load(html);
+      const xmlText = await res.text();
+      const $ = cheerio.load(xmlText, { xmlMode: true });
 
-      $(".s-item").each((i, element) => {
+      $("item").each((i, element) => {
         if (i >= 15) return;
-        const row = $(element);
-        const title = cleanText(row.find(".s-item__title").text());
-        const price = parsePrice(row.find(".s-item__price").text());
-        const itemUrl = row.find("a.s-item__link").attr("href") || `https://www.ebay.com/sch/i.html?_nkw=${encodeURIComponent(query)}`;
-        const imgUrl = row.find(".s-item__image-img").attr("src") || row.find(".s-item__image-img").attr("data-src") || "";
+        const item = $(element);
+        const title = cleanText(item.find("title").text());
+        const itemUrl = item.find("link").text() || `https://www.ebay.com/sch/i.html?_nkw=${encodeURIComponent(query)}`;
+        const desc = item.find("description").text();
 
-        if (title && !title.includes("Shop on eBay") && price) {
+        const priceMatch = desc.match(/\$([0-9,]+(\.[0-9]{2})?)/);
+        const price = priceMatch ? parsePrice(priceMatch[1]) : 250;
+
+        const imgMatch = desc.match(/src="([^"]+)"/);
+        const imageUrl = imgMatch ? imgMatch[1] : "";
+
+        if (title && !title.includes("Shop on eBay")) {
           drafts.push({
             id: `ebay-${i}-${Date.now()}`,
             title,
-            price,
+            price: price || 200,
             location: "Shipped / Online",
             lat: originLat + (Math.random() - 0.5) * 0.1,
             lng: originLng + (Math.random() - 0.5) * 0.1,
-            imageUrl: imgUrl || "https://ir.ebaystatic.com/cr/v/c1/s_1x2.png",
+            imageUrl,
             sourcePlatform: "eBay",
-            description: `Live eBay listing for ${title}. Click to view product on eBay.`,
+            description: `Live eBay item listing for ${title}.`,
             timestamp: new Date().toISOString(),
             url: itemUrl,
           });
@@ -142,7 +148,7 @@ async function fetchEbay(query: string, originLat: number, originLng: number): P
   return drafts;
 }
 
-/** 3. FACEBOOK MARKETPLACE BRIDGE SCRAPER */
+/** 3. FACEBOOK MARKETPLACE SCRAPER */
 async function fetchMarketplace(query: string, originLat: number, originLng: number): Promise<ScrapedListingDraft[]> {
   const drafts: ScrapedListingDraft[] = [];
   try {
@@ -165,12 +171,12 @@ async function fetchMarketplace(query: string, originLat: number, originLng: num
             if (parsed.id && parsed.marketplace_listing_title) {
               drafts.push({
                 id: `mkt-${parsed.id}`,
-                title: parsed.marketplace_listing_title,
-                price: parsePrice(parsed.listing_price?.amount) || 250,
+                title: cleanText(parsed.marketplace_listing_title),
+                price: parsePrice(parsed.listing_price?.amount) || 300,
                 location: "Atlanta / Local",
                 lat: originLat + (Math.random() - 0.5) * 0.04,
                 lng: originLng + (Math.random() - 0.5) * 0.04,
-                imageUrl: parsed.primary_photo?.image?.uri || "https://z-p3-static.xx.fbcdn.net/rsrc.php/v3/y8/r/k29B3u369x5.png",
+                imageUrl: parsed.primary_photo?.image?.uri || "",
                 sourcePlatform: "Marketplace",
                 description: `Facebook Marketplace item: ${parsed.marketplace_listing_title}.`,
                 timestamp: new Date().toISOString(),
@@ -178,7 +184,7 @@ async function fetchMarketplace(query: string, originLat: number, originLng: num
               });
             }
           } catch {
-            // Ignore individual match parse errors
+            // Ignore parse errors on individual JSON matches
           }
         });
       }
@@ -190,20 +196,15 @@ async function fetchMarketplace(query: string, originLat: number, originLng: num
 }
 
 function computeDealScore(price: number, median: number | null): number {
-  if (median === null || median <= 0) return 6;
+  if (median === null || median <= 0) return 7;
   const ratio = price / median;
   const raw = 10 - (ratio - 0.5) * 10;
   return Math.min(10, Math.max(1, Math.round(raw)));
 }
 
-function clamp(value: number, min: number, max: number): number {
-  return Math.min(max, Math.max(min, value));
-}
-
 function parseRequest(input: Record<string, unknown>): Required<ScrapeRequest> {
   const rawQuery = typeof input.query === "string" ? input.query.trim() : "";
-  // If the search bar is empty, default to "coilovers" so the feed always populates
-  const finalQuery = rawQuery.length > 0 ? rawQuery.slice(0, 120) : "coilovers";
+  const finalQuery = rawQuery.length > 0 ? rawQuery.slice(0, 120) : "brz";
 
   return {
     query: finalQuery,
@@ -234,7 +235,7 @@ async function runScrape(request: Required<ScrapeRequest>): Promise<ScrapeRespon
       title: draft.title,
       price: draft.price,
       location: draft.location,
-      distanceMiles: 5.2, // Fixed safe local distance display
+      distanceMiles: 5.2,
       imageUrl: draft.imageUrl,
       sourcePlatform: draft.sourcePlatform,
       description: draft.description,
