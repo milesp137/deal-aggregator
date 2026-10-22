@@ -37,9 +37,26 @@ function cleanText(value: string): string {
   return value.replace(/\s+/g, " ").trim();
 }
 
+/** Prices under this are "contact me" placeholders ($1, $0), not real asking prices. */
+export const MIN_REAL_PRICE = 5;
+
 function parsePrice(raw: string | number): number | null {
   const value = typeof raw === "number" ? raw : parseFloat(`${raw}`.replace(/[^0-9.]/g, ""));
-  return Number.isFinite(value) && value > 0 ? Math.round(value) : null;
+  return Number.isFinite(value) && value >= MIN_REAL_PRICE ? Math.round(value) : null;
+}
+
+function squash(text: string): string {
+  return text.toLowerCase().replace(/[^a-z0-9]/g, "");
+}
+
+/**
+ * Every search word must appear in the TITLE, ignoring spaces and punctuation
+ * ("240 SX" matches "240sx"). Keeps out posts that only mention the keyword in spammy bodies.
+ */
+export function titleMatchesQuery(title: string, query: string): boolean {
+  const terms = query.toLowerCase().split(/\s+/).map(squash).filter(Boolean);
+  const haystack = squash(title);
+  return terms.every((term) => haystack.includes(term));
 }
 
 async function fetchWithTimeout(url: string, init: RequestInit = {}, ms = 7000): Promise<Response> {
@@ -108,6 +125,8 @@ export async function scrapeCraigslist(query: string, origin: Origin): Promise<L
     const title = cleanText(row.attr("title") ?? row.find(".title").first().text());
     const price = parsePrice(row.find(".price").first().text());
     if (!url || !title || price === null) return;
+    // Craigslist's search also returns dealer spam that only mentions the keyword in the body.
+    if (query && !titleMatchesQuery(title, query)) return;
     rows.push({ title, price, url, area: cleanText(row.find(".location").first().text()) });
   });
 
@@ -115,6 +134,8 @@ export async function scrapeCraigslist(query: string, origin: Origin): Promise<L
     rows.map(async (row): Promise<ListingDraft> => {
       let imageUrl = "";
       let description = "";
+      // Search-result areas are sometimes street addresses; the post's geo tags are cleaner.
+      let location = /^\d/.test(row.area) ? site.label : row.area || site.label;
       let lat: number | null = site.lat;
       let lng: number | null = site.lng;
       let timestamp = new Date().toISOString();
@@ -126,6 +147,9 @@ export async function scrapeCraigslist(query: string, origin: Origin): Promise<L
           imageUrl = $post('meta[property="og:image"]').attr("content") ?? "";
           const body = cleanText($post("#postingbody").text().replace("QR Code Link to This Post", ""));
           description = body || cleanText($post('meta[property="og:description"]').attr("content") ?? "");
+          const placename = cleanText($post('meta[name="geo.placename"]').attr("content") ?? "");
+          const region = ($post('meta[name="geo.region"]').attr("content") ?? "").replace(/^US-/, "");
+          if (placename) location = region ? `${placename}, ${region}` : placename;
           const geo = ($post('meta[name="geo.position"]').attr("content") ?? "").split(";");
           const postLat = parseFloat(geo[0]);
           const postLng = parseFloat(geo[1]);
@@ -145,7 +169,7 @@ export async function scrapeCraigslist(query: string, origin: Origin): Promise<L
         id: `cl-${id}`,
         title: row.title,
         price: row.price,
-        location: `${row.area || site.label}`,
+        location,
         lat,
         lng,
         imageUrl: imageUrl || placeholderImage(row.title, id),

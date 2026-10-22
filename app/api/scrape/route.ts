@@ -15,6 +15,7 @@ import {
   type MarketplaceItem,
 } from "@/lib/mockSources";
 import { DEFAULT_ORIGIN, lookupMarket } from "@/lib/market";
+import { scrapeFacebookMarketplace } from "@/lib/facebook";
 import {
   isEbayConfigured,
   scrapeCraigslist,
@@ -342,10 +343,11 @@ async function runScrape(request: Required<ScrapeRequest>): Promise<ScrapeRespon
       isEbayConfigured() ? () => scrapeEbay(request.query || "car parts") : null,
       async () => normalizeEbay(await fetchSource(() => getEbayPayload(now)), request.query),
     ),
-    // Facebook Marketplace has no public API and requires a login to view search results,
-    // so it always uses sample data (flagged with isSample).
-    liveOrSample("Marketplace", null, async () =>
-      normalizeMarketplace(await fetchSource(() => getMarketplacePayload(now)), request.query),
+    liveOrSample(
+      "Marketplace",
+      () => scrapeFacebookMarketplace(request.query, origin),
+      async () =>
+        normalizeMarketplace(await fetchSource(() => getMarketplacePayload(now)), request.query),
     ),
     liveOrSample(
       "Craigs",
@@ -372,7 +374,8 @@ async function runScrape(request: Required<ScrapeRequest>): Promise<ScrapeRespon
 
   const terms = request.query.toLowerCase().split(/\s+/).filter(Boolean);
   const matched = drafts.filter((draft) => {
-    if (terms.length === 0) return true;
+    // Live results were already matched against the query by their scraper.
+    if (!draft.isSample || terms.length === 0) return true;
     const haystack = `${draft.title} ${draft.description}`.toLowerCase();
     return terms.every((term) => haystack.includes(term));
   });

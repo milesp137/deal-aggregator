@@ -128,8 +128,8 @@ export default function ListingCard({ listing, isNew, matchedAlerts }: ListingCa
           <div className="mt-auto flex flex-wrap items-center gap-x-4 gap-y-1 border-t border-line pt-3 text-xs text-zinc-400">
             <span className="inline-flex items-center gap-1">
               <MapPin className="h-3.5 w-3.5" />
-              {listing.location} &middot;{" "}
-              {listing.distanceMiles === null ? "Ships" : formatDistance(listing.distanceMiles)}
+              {listing.location}
+              {listing.distanceMiles !== null && <> &middot; {formatDistance(listing.distanceMiles)}</>}
             </span>
             <span className="inline-flex items-center gap-1">
               <Clock className="h-3.5 w-3.5" />
