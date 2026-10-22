@@ -39,6 +39,10 @@ export default function ListingCard({ listing, isNew, matchedAlerts }: ListingCa
             src={listing.imageUrl}
             alt={listing.title}
             loading="lazy"
+            onError={(e) => {
+              // If external image fails to load, set fallback clean badge
+              (e.target as HTMLImageElement).src = `https://placehold.co/600x400/18181b/ffffff?text=${encodeURIComponent(listing.title.slice(0, 20))}`;
+            }}
             className={`h-full w-full object-cover transition duration-500 group-hover:scale-105 ${
               listing.isScam ? "opacity-50 grayscale" : ""
             }`}
