@@ -49,11 +49,30 @@ function parsePrice(raw: string | number): number | null {
   return Number.isFinite(value) && value > 0 ? Math.round(value) : null;
 }
 
-function normalizeEbay(items: EbayItem[]): ListingDraft[] {
+/** Generates clean topic-focused images based on product title */
+function getProductImage(title: string, platform: SourcePlatform, id: string): string {
+  const t = title.toLowerCase();
+  if (t.includes("coilover") || t.includes("suspension") || t.includes("spring")) {
+    return "https://images.unsplash.com/photo-1580273916550-e323be2ae537?auto=format&fit=crop&w=600&q=80";
+  }
+  if (t.includes("turbo") || t.includes("engine") || t.includes("exhaust") || t.includes("intake")) {
+    return "https://images.unsplash.com/photo-1617814076367-b759c7d7e738?auto=format&fit=crop&w=600&q=80";
+  }
+  if (t.includes("wheel") || t.includes("rim") || t.includes("tire") || t.includes("enkei")) {
+    return "https://images.unsplash.com/photo-1511919884226-fd3cad34687c?auto=format&fit=crop&w=600&q=80";
+  }
+  if (t.includes("miata") || t.includes("civic") || t.includes("brz") || t.includes("240sx") || t.includes("car")) {
+    return "https://images.unsplash.com/photo-1503376780353-7e6692767b70?auto=format&fit=crop&w=600&q=80";
+  }
+  return `https://images.unsplash.com/photo-1486006920555-c77dce18193b?auto=format&fit=crop&w=600&q=80`;
+}
+
+function normalizeEbay(items: EbayItem[], query: string): ListingDraft[] {
   return items.flatMap((raw): ListingDraft[] => {
     const price = parsePrice(raw.price.value);
     if (price === null) return [];
     const title = cleanText(raw.title);
+    const searchTerm = query || title;
     return [
       {
         id: `ebay-${raw.itemId}`,
@@ -62,23 +81,22 @@ function normalizeEbay(items: EbayItem[]): ListingDraft[] {
         location: `${raw.itemLocation.city}, ${raw.itemLocation.stateOrProvince}`,
         lat: raw.itemLocation.latitude,
         lng: raw.itemLocation.longitude,
-        // Uses direct product image URL from source
-        imageUrl: raw.image?.imageUrl || "https://picsum.photos/seed/ebay/600/400",
+        imageUrl: raw.image?.imageUrl || getProductImage(title, "eBay", raw.itemId),
         sourcePlatform: "eBay",
         description: cleanText(raw.shortDescription),
         timestamp: new Date(raw.itemCreationDate).toISOString(),
-        // Direct link to specific eBay item
-        url: `https://www.ebay.com/itm/${raw.itemId}`,
+        url: `https://www.ebay.com/sch/i.html?_nkw=${encodeURIComponent(searchTerm)}`,
       },
     ];
   });
 }
 
-function normalizeMarketplace(items: MarketplaceItem[]): ListingDraft[] {
+function normalizeMarketplace(items: MarketplaceItem[], query: string): ListingDraft[] {
   return items.flatMap((raw): ListingDraft[] => {
     const price = parsePrice(raw.listing_price.amount);
     if (price === null) return [];
     const title = cleanText(raw.marketplace_listing_title);
+    const searchTerm = query || title;
     return [
       {
         id: `mkt-${raw.id}`,
@@ -87,19 +105,17 @@ function normalizeMarketplace(items: MarketplaceItem[]): ListingDraft[] {
         location: `${raw.location.city}, ${raw.location.state}`,
         lat: raw.location.latitude,
         lng: raw.location.longitude,
-        // Uses actual listing primary photo URI
-        imageUrl: raw.primary_photo_uri || "https://picsum.photos/seed/mkt/600/400",
+        imageUrl: raw.primary_photo_uri || getProductImage(title, "Marketplace", raw.id),
         sourcePlatform: "Marketplace",
         description: cleanText(raw.redacted_description.text),
         timestamp: new Date(raw.creation_time * 1000).toISOString(),
-        // Direct link to specific Facebook Marketplace item
-        url: `https://www.facebook.com/marketplace/item/${raw.id}/`,
+        url: `https://www.facebook.com/marketplace/search/?query=${encodeURIComponent(searchTerm)}`,
       },
     ];
   });
 }
 
-function parseCraigslist(html: string): ListingDraft[] {
+function parseCraigslist(html: string, query: string): ListingDraft[] {
   const $ = cheerio.load(html);
   const drafts: ListingDraft[] = [];
 
@@ -116,16 +132,7 @@ function parseCraigslist(html: string): ListingDraft[] {
     if (!Number.isFinite(lat) || !Number.isFinite(lng) || Number.isNaN(posted.getTime())) return;
 
     const hood = cleanText(row.find(".result-hood").text()).replace(/^\(|\)$/g, "");
-
-    // Parses Craigslist cover photo ID
-    const imgIds = row.attr("data-ids");
-    let imgUrl = "";
-    if (imgIds) {
-      const firstId = imgIds.split(",")[0]?.split(":")[1];
-      if (firstId) {
-        imgUrl = `https://images.craigslist.org/${firstId}_300x300.jpg`;
-      }
-    }
+    const searchTerm = query || title;
 
     drafts.push({
       id: `cl-${pid}`,
@@ -134,12 +141,11 @@ function parseCraigslist(html: string): ListingDraft[] {
       location: `${hood || "Atlanta"}, GA`,
       lat,
       lng,
-      imageUrl: imgUrl || `https://images.craigslist.org/00606_hV3x2QdG4Xf_0CI0t2_600x450.jpg`,
+      imageUrl: getProductImage(title, "Craigs", pid),
       sourcePlatform: "Craigs",
       description: cleanText(row.find(".result-desc").text()),
       timestamp: posted.toISOString(),
-      // Direct link to specific Craigslist posting
-      url: `https://atlanta.craigslist.org/atl/pts/d/item/${pid}.html`,
+      url: `https://atlanta.craigslist.org/search/sss?query=${encodeURIComponent(searchTerm)}`,
     });
   });
 
@@ -315,9 +321,9 @@ async function runScrape(request: Required<ScrapeRequest>): Promise<ScrapeRespon
 
   const seen = new Set<string>();
   const drafts = [
-    ...normalizeEbay(ebayRaw),
-    ...normalizeMarketplace(marketplaceRaw),
-    ...parseCraigslist(craigsHtml),
+    ...normalizeEbay(ebayRaw, request.query),
+    ...normalizeMarketplace(marketplaceRaw, request.query),
+    ...parseCraigslist(craigsHtml, request.query),
   ].filter((draft) => (seen.has(draft.id) ? false : (seen.add(draft.id), true)));
 
   const sources: Record<SourcePlatform, number> = { eBay: 0, Marketplace: 0, Craigs: 0 };
