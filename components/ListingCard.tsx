@@ -66,6 +66,14 @@ export default function ListingCard({ listing, isNew, matchedAlerts }: ListingCa
                 <Sparkles className="h-3 w-3" /> New
               </span>
             )}
+            {listing.isSample && (
+              <span
+                title="Built-in sample data, not a real post. The link opens a search on the platform."
+                className="inline-flex items-center rounded-md bg-zinc-800/90 px-2 py-1 text-[11px] font-bold uppercase text-zinc-300"
+              >
+                Sample
+              </span>
+            )}
             {hasAlert && (
               <span
                 title={`Matches: ${matchedAlerts.map((alert) => alert.keyword).join(", ")}`}
@@ -120,7 +128,8 @@ export default function ListingCard({ listing, isNew, matchedAlerts }: ListingCa
           <div className="mt-auto flex flex-wrap items-center gap-x-4 gap-y-1 border-t border-line pt-3 text-xs text-zinc-400">
             <span className="inline-flex items-center gap-1">
               <MapPin className="h-3.5 w-3.5" />
-              {listing.location} &middot; {formatDistance(listing.distanceMiles)}
+              {listing.location} &middot;{" "}
+              {listing.distanceMiles === null ? "Ships" : formatDistance(listing.distanceMiles)}
             </span>
             <span className="inline-flex items-center gap-1">
               <Clock className="h-3.5 w-3.5" />

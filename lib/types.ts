@@ -9,7 +9,9 @@ export interface Listing {
   /** Human readable "City, ST". */
   location: string;
   /** Great-circle distance from the search origin, in miles. */
-  distanceMiles: number;
+  /** null when the platform gives no coordinates (e.g. shipped eBay items). */
+  distanceMiles: number | null;
+  /** First photo of the post. */
   imageUrl: string;
   sourcePlatform: SourcePlatform;
   description: string;
@@ -22,7 +24,10 @@ export interface Listing {
   timestamp: string;
   /** Market median used for scoring; null when no comparable data exists. */
   marketMedian: number | null;
+  /** Direct link to the individual post on its platform. */
   url?: string;
+  /** True for built-in sample data (not a real post). */
+  isSample?: boolean;
 }
 
 /** A power-user rule: "tell me when <keyword> shows up under <maxPrice>". */
@@ -56,6 +61,8 @@ export interface ScrapeMeta {
   scrapedAt: string;
   origin: { label: string; lat: number; lng: number };
   sources: Record<SourcePlatform, number>;
+  /** Whether each platform returned real scraped data (false = sample fallback). */
+  live: Record<SourcePlatform, boolean>;
 }
 
 export interface ScrapeResponse {

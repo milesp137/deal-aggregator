@@ -15,9 +15,16 @@ import {
   type MarketplaceItem,
 } from "@/lib/mockSources";
 import { DEFAULT_ORIGIN, lookupMarket } from "@/lib/market";
+import {
+  isEbayConfigured,
+  scrapeCraigslist,
+  scrapeEbay,
+  type ListingDraft,
+} from "@/lib/scrapers";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
+export const maxDuration = 30;
 
 const sleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
 
@@ -26,18 +33,29 @@ async function fetchSource<T>(produce: () => T): Promise<T> {
   return produce();
 }
 
-interface ListingDraft {
-  id: string;
-  title: string;
-  price: number;
-  location: string;
-  lat: number;
-  lng: number;
-  imageUrl: string;
-  sourcePlatform: SourcePlatform;
-  description: string;
-  timestamp: string;
-  url: string;
+interface SourceResult {
+  drafts: ListingDraft[];
+  live: boolean;
+}
+
+/**
+ * Runs the live scraper when one is available. Falls back to built-in sample data only when
+ * the live scraper is unavailable or errors (blocked IP, missing API keys, timeout). A live
+ * scrape that succeeds with zero results stays empty rather than showing fake listings.
+ */
+async function liveOrSample(
+  platform: SourcePlatform,
+  live: (() => Promise<ListingDraft[]>) | null,
+  sample: () => Promise<ListingDraft[]>,
+): Promise<SourceResult> {
+  if (live) {
+    try {
+      return { drafts: await live(), live: true };
+    } catch (error) {
+      console.warn(`[scrape] ${platform} live scrape failed, using sample data:`, error);
+    }
+  }
+  return { drafts: await sample(), live: false };
 }
 
 function cleanText(value: string): string {
@@ -86,6 +104,7 @@ function normalizeEbay(items: EbayItem[], query: string): ListingDraft[] {
         description: cleanText(raw.shortDescription),
         timestamp: new Date(raw.itemCreationDate).toISOString(),
         url: `https://www.ebay.com/sch/i.html?_nkw=${encodeURIComponent(searchTerm)}`,
+        isSample: true,
       },
     ];
   });
@@ -110,6 +129,7 @@ function normalizeMarketplace(items: MarketplaceItem[], query: string): ListingD
         description: cleanText(raw.redacted_description.text),
         timestamp: new Date(raw.creation_time * 1000).toISOString(),
         url: `https://www.facebook.com/marketplace/search/?query=${encodeURIComponent(searchTerm)}`,
+        isSample: true,
       },
     ];
   });
@@ -146,6 +166,7 @@ function parseCraigslist(html: string, query: string): ListingDraft[] {
       description: cleanText(row.find(".result-desc").text()),
       timestamp: posted.toISOString(),
       url: `https://atlanta.craigslist.org/search/sss?query=${encodeURIComponent(searchTerm)}`,
+      isSample: true,
     });
   });
 
@@ -313,18 +334,36 @@ async function runScrape(request: Required<ScrapeRequest>): Promise<ScrapeRespon
   const startedAt = Date.now();
   const now = startedAt;
 
-  const [ebayRaw, marketplaceRaw, craigsHtml] = await Promise.all([
-    fetchSource(() => getEbayPayload(now)),
-    fetchSource(() => getMarketplacePayload(now)),
-    fetchSource(() => getCraigslistHtml(now)),
+  const origin = { lat: request.originLat, lng: request.originLng };
+
+  const [ebay, marketplace, craigslist] = await Promise.all([
+    liveOrSample(
+      "eBay",
+      isEbayConfigured() ? () => scrapeEbay(request.query || "car parts") : null,
+      async () => normalizeEbay(await fetchSource(() => getEbayPayload(now)), request.query),
+    ),
+    // Facebook Marketplace has no public API and requires a login to view search results,
+    // so it always uses sample data (flagged with isSample).
+    liveOrSample("Marketplace", null, async () =>
+      normalizeMarketplace(await fetchSource(() => getMarketplacePayload(now)), request.query),
+    ),
+    liveOrSample(
+      "Craigs",
+      () => scrapeCraigslist(request.query, origin),
+      async () => parseCraigslist(await fetchSource(() => getCraigslistHtml(now)), request.query),
+    ),
   ]);
 
+  const live: Record<SourcePlatform, boolean> = {
+    eBay: ebay.live,
+    Marketplace: marketplace.live,
+    Craigs: craigslist.live,
+  };
+
   const seen = new Set<string>();
-  const drafts = [
-    ...normalizeEbay(ebayRaw, request.query),
-    ...normalizeMarketplace(marketplaceRaw, request.query),
-    ...parseCraigslist(craigsHtml, request.query),
-  ].filter((draft) => (seen.has(draft.id) ? false : (seen.add(draft.id), true)));
+  const drafts = [...ebay.drafts, ...marketplace.drafts, ...craigslist.drafts].filter((draft) =>
+    seen.has(draft.id) ? false : (seen.add(draft.id), true),
+  );
 
   const sources: Record<SourcePlatform, number> = { eBay: 0, Marketplace: 0, Craigs: 0 };
   for (const draft of drafts) sources[draft.sourcePlatform]++;
@@ -350,9 +389,12 @@ async function runScrape(request: Required<ScrapeRequest>): Promise<ScrapeRespon
       price: draft.price,
       location: draft.location,
       distanceMiles:
-        Math.round(
-          haversineMiles(request.originLat, request.originLng, draft.lat, draft.lng) * 10,
-        ) / 10,
+        draft.lat === null || draft.lng === null
+          ? null
+          : Math.round(
+              haversineMiles(request.originLat, request.originLng, draft.lat, draft.lng) * 10,
+            ) / 10,
+      isSample: draft.isSample ?? false,
       imageUrl: draft.imageUrl,
       sourcePlatform: draft.sourcePlatform,
       description: draft.description,
@@ -368,7 +410,9 @@ async function runScrape(request: Required<ScrapeRequest>): Promise<ScrapeRespon
   const listings = enriched
     .filter(
       (listing) =>
-        (request.maxDistance >= ANY_DISTANCE || listing.distanceMiles <= request.maxDistance) &&
+        (request.maxDistance >= ANY_DISTANCE ||
+          listing.distanceMiles === null ||
+          listing.distanceMiles <= request.maxDistance) &&
         listing.dealScore >= request.minDealScore,
     )
     .sort(
@@ -392,6 +436,7 @@ async function runScrape(request: Required<ScrapeRequest>): Promise<ScrapeRespon
       lng: request.originLng,
     },
     sources,
+    live,
   };
 
   return { listings, meta };
