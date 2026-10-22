@@ -1,55 +1,30 @@
 import { NextResponse } from "next/server";
-import { Redis } from "@upstash/redis";
+import { createAlert, deleteAlert, listAlerts, updateAlert } from "@/lib/db";
 
-const DEFAULT_ALERTS = [
-  { id: "1", keyword: "coilover", maxPrice: 1200, minDealScore: 7, enabled: true },
-  { id: "2", keyword: "turbo", maxPrice: 2000, minDealScore: 8, enabled: true },
-];
-
-let redis: Redis | null = null;
-if (process.env.UPSTASH_REDIS_REST_URL && process.env.UPSTASH_REDIS_REST_TOKEN) {
-  try {
-    redis = Redis.fromEnv();
-  } catch {
-    redis = null;
-  }
-}
-
-const REDIS_KEY = "dealradar:alerts";
+// Storage (Upstash Redis with in-memory fallback) lives in lib/db.ts; no file-system access here.
+export const dynamic = "force-dynamic";
 
 export async function GET() {
   try {
-    if (redis) {
-      const alerts = await redis.get(REDIS_KEY);
-      if (alerts) {
-        return NextResponse.json({ alerts });
-      }
-      await redis.set(REDIS_KEY, DEFAULT_ALERTS);
-    }
-    return NextResponse.json({ alerts: DEFAULT_ALERTS });
+    return NextResponse.json({ alerts: await listAlerts() });
   } catch {
-    return NextResponse.json({ alerts: DEFAULT_ALERTS });
+    return NextResponse.json({ error: "Failed to load alerts" }, { status: 500 });
   }
 }
 
 export async function POST(req: Request) {
   try {
     const body = await req.json();
-    const newAlert = {
-      id: Date.now().toString(),
-      keyword: body.keyword,
+    const keyword = typeof body.keyword === "string" ? body.keyword.trim() : "";
+    if (!keyword) {
+      return NextResponse.json({ error: "keyword is required" }, { status: 400 });
+    }
+    const alert = await createAlert({
+      keyword,
       maxPrice: body.maxPrice ?? null,
       minDealScore: body.minDealScore ?? 1,
-      enabled: true,
-    };
-
-    if (redis) {
-      const currentAlerts: any[] = (await redis.get(REDIS_KEY)) || DEFAULT_ALERTS;
-      const updated = [newAlert, ...currentAlerts];
-      await redis.set(REDIS_KEY, updated);
-    }
-
-    return NextResponse.json({ alert: newAlert });
+    });
+    return NextResponse.json({ alert });
   } catch {
     return NextResponse.json({ error: "Failed to create alert" }, { status: 500 });
   }
@@ -58,16 +33,9 @@ export async function POST(req: Request) {
 export async function PATCH(req: Request) {
   try {
     const { id, enabled } = await req.json();
-    let currentAlerts = DEFAULT_ALERTS;
-
-    if (redis) {
-      currentAlerts = (await redis.get(REDIS_KEY)) || DEFAULT_ALERTS;
-      currentAlerts = currentAlerts.map((a) => (a.id === id ? { ...a, enabled } : a));
-      await redis.set(REDIS_KEY, currentAlerts);
-    }
-
-    const updated = currentAlerts.find((a) => a.id === id) || { id, enabled };
-    return NextResponse.json({ alert: updated });
+    const alert = await updateAlert(id, { enabled });
+    if (!alert) return NextResponse.json({ error: "Alert not found" }, { status: 404 });
+    return NextResponse.json({ alert });
   } catch {
     return NextResponse.json({ error: "Failed to update alert" }, { status: 500 });
   }
@@ -75,15 +43,8 @@ export async function PATCH(req: Request) {
 
 export async function DELETE(req: Request) {
   try {
-    const { searchParams } = new URL(req.url);
-    const id = searchParams.get("id");
-
-    if (redis && id) {
-      let currentAlerts: any[] = (await redis.get(REDIS_KEY)) || DEFAULT_ALERTS;
-      currentAlerts = currentAlerts.filter((a) => a.id !== id);
-      await redis.set(REDIS_KEY, currentAlerts);
-    }
-
+    const id = new URL(req.url).searchParams.get("id");
+    if (id) await deleteAlert(id);
     return NextResponse.json({ success: true });
   } catch {
     return NextResponse.json({ error: "Failed to delete alert" }, { status: 500 });

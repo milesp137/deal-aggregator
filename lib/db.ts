@@ -1,22 +1,43 @@
-import { promises as fs } from "fs";
-import path from "path";
 import { randomUUID } from "crypto";
+import { Redis } from "@upstash/redis";
 import type { AlertKeyword } from "./types";
 
 /**
- * Tiny file-backed "database" for alert rules (data/alerts.json). Zero native dependencies,
- * so it works on any OS. The shape matches the AlertKeyword table you would create in
- * SQLite/Postgres later, so swapping the storage layer only touches this file.
+ * Alert-rule store. Never touches the file system (serverless runtimes like Vercel have a
+ * read-only /var/task). Uses Upstash Redis when UPSTASH_REDIS_REST_URL/TOKEN are set, and
+ * falls back to an in-memory array otherwise (per-instance, resets on cold start).
  */
 
-const DB_PATH = path.join(process.cwd(), "data", "alerts.json");
+const REDIS_KEY = "dealradar:alerts";
 
 const SEED: Omit<AlertKeyword, "id" | "createdAt">[] = [
-  { keyword: "240sx", maxPrice: 13000, minDealScore: 6, enabled: true },
-  { keyword: "rtx 4090", maxPrice: 1200, minDealScore: 6, enabled: true },
+  { keyword: "coilover", maxPrice: 1200, minDealScore: 7, enabled: true },
+  { keyword: "turbo", maxPrice: 2000, minDealScore: 8, enabled: true },
 ];
 
-// Serializes read-modify-write cycles so concurrent requests can't clobber each other.
+function seedAlerts(): AlertKeyword[] {
+  const createdAt = new Date().toISOString();
+  return SEED.map((rule) => ({ ...rule, id: randomUUID(), createdAt }));
+}
+
+let redis: Redis | null = null;
+if (process.env.UPSTASH_REDIS_REST_URL && process.env.UPSTASH_REDIS_REST_TOKEN) {
+  try {
+    redis = Redis.fromEnv();
+  } catch {
+    redis = null;
+  }
+}
+
+// In-memory fallback; kept on globalThis so dev hot-reloads don't reset it.
+const globalStore = globalThis as unknown as { __dealradarAlerts?: AlertKeyword[] };
+
+function memory(): AlertKeyword[] {
+  if (!globalStore.__dealradarAlerts) globalStore.__dealradarAlerts = seedAlerts();
+  return globalStore.__dealradarAlerts;
+}
+
+// Serializes read-modify-write cycles so concurrent requests in one instance can't clobber each other.
 let queue: Promise<unknown> = Promise.resolve();
 function withLock<T>(task: () => Promise<T>): Promise<T> {
   const run = queue.then(task);
@@ -25,25 +46,32 @@ function withLock<T>(task: () => Promise<T>): Promise<T> {
 }
 
 async function writeAll(alerts: AlertKeyword[]): Promise<void> {
-  await fs.mkdir(path.dirname(DB_PATH), { recursive: true });
-  await fs.writeFile(DB_PATH, JSON.stringify(alerts, null, 2), "utf8");
+  // Always mirror to memory so a Redis outage degrades gracefully.
+  globalStore.__dealradarAlerts = alerts;
+  if (!redis) return;
+  try {
+    await redis.set(REDIS_KEY, alerts);
+  } catch {
+    // Redis unavailable: memory copy above remains the source of truth for this instance.
+  }
 }
 
 async function readAll(): Promise<AlertKeyword[]> {
-  try {
-    const raw = await fs.readFile(DB_PATH, "utf8");
-    const parsed: unknown = JSON.parse(raw);
-    return Array.isArray(parsed) ? (parsed as AlertKeyword[]) : [];
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
-    const seeded: AlertKeyword[] = SEED.map((rule) => ({
-      ...rule,
-      id: randomUUID(),
-      createdAt: new Date().toISOString(),
-    }));
-    await writeAll(seeded);
-    return seeded;
+  if (redis) {
+    try {
+      const stored = await redis.get<AlertKeyword[]>(REDIS_KEY);
+      if (Array.isArray(stored)) {
+        globalStore.__dealradarAlerts = stored;
+        return stored;
+      }
+      const seeded = seedAlerts();
+      await writeAll(seeded);
+      return seeded;
+    } catch {
+      // fall through to in-memory data
+    }
   }
+  return memory();
 }
 
 export function listAlerts(): Promise<AlertKeyword[]> {
@@ -77,7 +105,7 @@ export function updateAlert(
   patch: Partial<Pick<AlertKeyword, "enabled" | "keyword" | "maxPrice" | "minDealScore">>,
 ): Promise<AlertKeyword | null> {
   return withLock(async () => {
-    const alerts = await readAll();
+    const alerts = [...(await readAll())];
     const index = alerts.findIndex((alert) => alert.id === id);
     if (index === -1) return null;
     const updated = { ...alerts[index], ...patch };
