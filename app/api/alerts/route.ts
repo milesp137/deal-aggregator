@@ -1,75 +1,91 @@
 import { NextResponse } from "next/server";
-import { createAlert, deleteAlert, listAlerts, updateAlert } from "@/lib/db";
+import { Redis } from "@upstash/redis";
 
-export const dynamic = "force-dynamic";
-export const runtime = "nodejs";
+const DEFAULT_ALERTS = [
+  { id: "1", keyword: "coilover", maxPrice: 1200, minDealScore: 7, enabled: true },
+  { id: "2", keyword: "turbo", maxPrice: 2000, minDealScore: 8, enabled: true },
+];
 
-const NO_STORE = { "Cache-Control": "no-store" };
-
-function badRequest(message: string) {
-  return NextResponse.json({ error: message }, { status: 400 });
-}
-
-async function readBody(req: Request): Promise<Record<string, unknown> | null> {
+let redis: Redis | null = null;
+if (process.env.UPSTASH_REDIS_REST_URL && process.env.UPSTASH_REDIS_REST_TOKEN) {
   try {
-    const body: unknown = await req.json();
-    return typeof body === "object" && body !== null && !Array.isArray(body)
-      ? (body as Record<string, unknown>)
-      : null;
+    redis = Redis.fromEnv();
   } catch {
-    return null;
+    redis = null;
   }
 }
 
-/** null / "" / undefined -> null (no limit). Valid positive number -> number. Anything else -> undefined (invalid). */
-function parseMaxPrice(value: unknown): number | null | undefined {
-  if (value === null || value === undefined || value === "") return null;
-  const parsed = typeof value === "number" ? value : Number(value);
-  return Number.isFinite(parsed) && parsed > 0 ? Math.round(parsed) : undefined;
-}
-
-function parseMinScore(value: unknown): number | undefined {
-  if (value === undefined) return 1;
-  const parsed = typeof value === "number" ? value : Number(value);
-  return Number.isInteger(parsed) && parsed >= 1 && parsed <= 10 ? parsed : undefined;
-}
+const REDIS_KEY = "dealradar:alerts";
 
 export async function GET() {
-  return NextResponse.json({ alerts: await listAlerts() }, { headers: NO_STORE });
+  try {
+    if (redis) {
+      const alerts = await redis.get(REDIS_KEY);
+      if (alerts) {
+        return NextResponse.json({ alerts });
+      }
+      await redis.set(REDIS_KEY, DEFAULT_ALERTS);
+    }
+    return NextResponse.json({ alerts: DEFAULT_ALERTS });
+  } catch {
+    return NextResponse.json({ alerts: DEFAULT_ALERTS });
+  }
 }
 
 export async function POST(req: Request) {
-  const body = await readBody(req);
-  if (!body) return badRequest("Request body must be a JSON object.");
+  try {
+    const body = await req.json();
+    const newAlert = {
+      id: Date.now().toString(),
+      keyword: body.keyword,
+      maxPrice: body.maxPrice ?? null,
+      minDealScore: body.minDealScore ?? 1,
+      enabled: true,
+    };
 
-  const keyword = typeof body.keyword === "string" ? body.keyword.trim().slice(0, 80) : "";
-  if (!keyword) return badRequest("keyword is required.");
+    if (redis) {
+      const currentAlerts: any[] = (await redis.get(REDIS_KEY)) || DEFAULT_ALERTS;
+      const updated = [newAlert, ...currentAlerts];
+      await redis.set(REDIS_KEY, updated);
+    }
 
-  const maxPrice = parseMaxPrice(body.maxPrice);
-  if (maxPrice === undefined) return badRequest("maxPrice must be a positive number.");
-
-  const minDealScore = parseMinScore(body.minDealScore);
-  if (minDealScore === undefined) return badRequest("minDealScore must be an integer from 1 to 10.");
-
-  const alert = await createAlert({ keyword, maxPrice, minDealScore });
-  return NextResponse.json({ alert }, { status: 201, headers: NO_STORE });
+    return NextResponse.json({ alert: newAlert });
+  } catch {
+    return NextResponse.json({ error: "Failed to create alert" }, { status: 500 });
+  }
 }
 
 export async function PATCH(req: Request) {
-  const body = await readBody(req);
-  if (!body || typeof body.id !== "string") return badRequest("id is required.");
-  if (typeof body.enabled !== "boolean") return badRequest("enabled must be a boolean.");
+  try {
+    const { id, enabled } = await req.json();
+    let currentAlerts = DEFAULT_ALERTS;
 
-  const alert = await updateAlert(body.id, { enabled: body.enabled });
-  if (!alert) return NextResponse.json({ error: "Alert not found." }, { status: 404 });
-  return NextResponse.json({ alert }, { headers: NO_STORE });
+    if (redis) {
+      currentAlerts = (await redis.get(REDIS_KEY)) || DEFAULT_ALERTS;
+      currentAlerts = currentAlerts.map((a) => (a.id === id ? { ...a, enabled } : a));
+      await redis.set(REDIS_KEY, currentAlerts);
+    }
+
+    const updated = currentAlerts.find((a) => a.id === id) || { id, enabled };
+    return NextResponse.json({ alert: updated });
+  } catch {
+    return NextResponse.json({ error: "Failed to update alert" }, { status: 500 });
+  }
 }
 
 export async function DELETE(req: Request) {
-  const id = new URL(req.url).searchParams.get("id");
-  if (!id) return badRequest("id query parameter is required.");
+  try {
+    const { searchParams } = new URL(req.url);
+    const id = searchParams.get("id");
 
-  const removed = await deleteAlert(id);
-  if (!removed) return NextResponse.json({ error: "Alert not found." }, { status: 404 });
-  return NextResponse.json({ ok: true }, { headers: NO_STORE });
+    if (redis && id) {
+      let currentAlerts: any[] = (await redis.get(REDIS_KEY)) || DEFAULT_ALERTS;
+      currentAlerts = currentAlerts.filter((a) => a.id !== id);
+      await redis.set(REDIS_KEY, currentAlerts);
+    }
+
+    return NextResponse.json({ success: true });
+  } catch {
+    return NextResponse.json({ error: "Failed to delete alert" }, { status: 500 });
+  }
 }
