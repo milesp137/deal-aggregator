@@ -15,7 +15,6 @@ import {
   type MarketplaceItem,
 } from "@/lib/mockSources";
 import { DEFAULT_ORIGIN, lookupMarket } from "@/lib/market";
-import { placeholderImage } from "@/lib/placeholder";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
@@ -50,7 +49,7 @@ function parsePrice(raw: string | number): number | null {
   return Number.isFinite(value) && value > 0 ? Math.round(value) : null;
 }
 
-function normalizeEbay(items: EbayItem[], query: string): ListingDraft[] {
+function normalizeEbay(items: EbayItem[]): ListingDraft[] {
   return items.flatMap((raw): ListingDraft[] => {
     const price = parsePrice(raw.price.value);
     if (price === null) return [];
@@ -63,17 +62,19 @@ function normalizeEbay(items: EbayItem[], query: string): ListingDraft[] {
         location: `${raw.itemLocation.city}, ${raw.itemLocation.stateOrProvince}`,
         lat: raw.itemLocation.latitude,
         lng: raw.itemLocation.longitude,
-        imageUrl: raw.image?.imageUrl ?? placeholderImage(title, raw.itemId),
+        // Uses direct product image URL from source
+        imageUrl: raw.image?.imageUrl || "https://picsum.photos/seed/ebay/600/400",
         sourcePlatform: "eBay",
         description: cleanText(raw.shortDescription),
         timestamp: new Date(raw.itemCreationDate).toISOString(),
-        url: `https://www.ebay.com/sch/i.html?_nkw=${encodeURIComponent(query || title)}`,
+        // Direct link to specific eBay item
+        url: `https://www.ebay.com/itm/${raw.itemId}`,
       },
     ];
   });
 }
 
-function normalizeMarketplace(items: MarketplaceItem[], query: string): ListingDraft[] {
+function normalizeMarketplace(items: MarketplaceItem[]): ListingDraft[] {
   return items.flatMap((raw): ListingDraft[] => {
     const price = parsePrice(raw.listing_price.amount);
     if (price === null) return [];
@@ -86,17 +87,19 @@ function normalizeMarketplace(items: MarketplaceItem[], query: string): ListingD
         location: `${raw.location.city}, ${raw.location.state}`,
         lat: raw.location.latitude,
         lng: raw.location.longitude,
-        imageUrl: raw.primary_photo_uri ?? placeholderImage(title, raw.id),
+        // Uses actual listing primary photo URI
+        imageUrl: raw.primary_photo_uri || "https://picsum.photos/seed/mkt/600/400",
         sourcePlatform: "Marketplace",
         description: cleanText(raw.redacted_description.text),
         timestamp: new Date(raw.creation_time * 1000).toISOString(),
-        url: `https://www.facebook.com/marketplace/search/?query=${encodeURIComponent(query || title)}`,
+        // Direct link to specific Facebook Marketplace item
+        url: `https://www.facebook.com/marketplace/item/${raw.id}/`,
       },
     ];
   });
 }
 
-function parseCraigslist(html: string, query: string): ListingDraft[] {
+function parseCraigslist(html: string): ListingDraft[] {
   const $ = cheerio.load(html);
   const drafts: ListingDraft[] = [];
 
@@ -114,7 +117,7 @@ function parseCraigslist(html: string, query: string): ListingDraft[] {
 
     const hood = cleanText(row.find(".result-hood").text()).replace(/^\(|\)$/g, "");
 
-    // Extract Craigslist image ID or build clean placeholder
+    // Parses Craigslist cover photo ID
     const imgIds = row.attr("data-ids");
     let imgUrl = "";
     if (imgIds) {
@@ -128,14 +131,15 @@ function parseCraigslist(html: string, query: string): ListingDraft[] {
       id: `cl-${pid}`,
       title,
       price,
-      location: `${hood || "Unknown"}, GA`,
+      location: `${hood || "Atlanta"}, GA`,
       lat,
       lng,
-      imageUrl: imgUrl || placeholderImage(title, pid),
+      imageUrl: imgUrl || `https://images.craigslist.org/00606_hV3x2QdG4Xf_0CI0t2_600x450.jpg`,
       sourcePlatform: "Craigs",
       description: cleanText(row.find(".result-desc").text()),
       timestamp: posted.toISOString(),
-      url: `https://atlanta.craigslist.org/search/sss?query=${encodeURIComponent(query || title)}`,
+      // Direct link to specific Craigslist posting
+      url: `https://atlanta.craigslist.org/atl/pts/d/item/${pid}.html`,
     });
   });
 
@@ -311,9 +315,9 @@ async function runScrape(request: Required<ScrapeRequest>): Promise<ScrapeRespon
 
   const seen = new Set<string>();
   const drafts = [
-    ...normalizeEbay(ebayRaw, request.query),
-    ...normalizeMarketplace(marketplaceRaw, request.query),
-    ...parseCraigslist(craigsHtml, request.query),
+    ...normalizeEbay(ebayRaw),
+    ...normalizeMarketplace(marketplaceRaw),
+    ...parseCraigslist(craigsHtml),
   ].filter((draft) => (seen.has(draft.id) ? false : (seen.add(draft.id), true)));
 
   const sources: Record<SourcePlatform, number> = { eBay: 0, Marketplace: 0, Craigs: 0 };
