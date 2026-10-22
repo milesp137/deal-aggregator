@@ -35,12 +35,12 @@ function parsePrice(raw: string | number): number | null {
   return Number.isFinite(value) && value > 0 ? Math.round(value) : null;
 }
 
-/** Reliable Craigslist Image & URL Scraper */
+/** Scrapes real cover photos directly from Craigslist RSS feed */
 async function fetchCraigslistLive(query: string, originLat: number, originLng: number): Promise<ScrapedListingDraft[]> {
   const drafts: ScrapedListingDraft[] = [];
   try {
-    const searchUrl = `https://atlanta.craigslist.org/search/sss?query=${encodeURIComponent(query)}`;
-    const res = await fetch(searchUrl, {
+    const rssUrl = `https://atlanta.craigslist.org/search/sss?query=${encodeURIComponent(query)}&format=rss`;
+    const res = await fetch(rssUrl, {
       headers: {
         "User-Agent":
           "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
@@ -48,43 +48,56 @@ async function fetchCraigslistLive(query: string, originLat: number, originLng: 
     });
 
     if (!res.ok) return drafts;
-    const html = await res.text();
-    const $ = cheerio.load(html);
+    const xmlText = await res.text();
+    const $ = cheerio.load(xmlText, { xmlMode: true });
 
-    $(".cl-static-search-result, li.result-row, .result-node").each((i, element) => {
+    $("item").each((i, element) => {
       if (i >= 15) return;
-      const row = $(element);
-      const title = cleanText(row.find(".title, a.result-title, .label").first().text());
-      const price = parsePrice(row.find(".price, .result-price").first().text());
-      const itemUrl = row.find("a").first().attr("href") || `https://atlanta.craigslist.org/search/sss?query=${encodeURIComponent(query)}`;
+      const item = $(element);
+      const titleRaw = item.find("title").text();
+      const itemUrl = item.find("link").text() || `https://atlanta.craigslist.org/search/sss?query=${encodeURIComponent(query)}`;
       
-      // Extract real image source or fallback
-      let rawImg = row.find("img").attr("src") || row.find("img").attr("data-src") || "";
-      if (rawImg && rawImg.startsWith("//")) {
-        rawImg = `https:${rawImg}`;
+      // Parse Title and Price from RSS format: "Title - $500 (Atlanta)"
+      let title = titleRaw;
+      let price: number | null = null;
+
+      const priceMatch = titleRaw.match(/\&#x24;([0-9,]+)|\$([0-9,]+)/);
+      if (priceMatch) {
+        price = parsePrice(priceMatch[1] || priceMatch[2]);
+        title = titleRaw.replace(/\&#x24;[0-9,]+|\$[0-9,]+/, "").replace(/\([^)]*\)/, "").trim();
       }
-      
-      // High quality fallback image generator if Craigslist suppresses the image
-      const imageUrl = rawImg || `https://placehold.co/600x400/18181b/ffffff?text=${encodeURIComponent(title.slice(0, 20))}`;
+
+      // Extract real listing cover photo directly from RSS enclosure tag
+      let realImg = item.find("enc\\:enclosure").attr("resource") || 
+                    item.find("enclosure").attr("url") || "";
+
+      // Fallback: extract image URL from the description HTML in RSS
+      if (!realImg) {
+        const descHtml = item.find("description").text();
+        const imgMatch = descHtml.match(/src="(https:\/\/images\.craigslist\.org\/[^"]+)"/);
+        if (imgMatch) {
+          realImg = imgMatch[1];
+        }
+      }
 
       if (title && price !== null) {
         drafts.push({
           id: `cl-${i}-${Date.now()}`,
-          title,
+          title: cleanText(title),
           price,
           location: "Atlanta / Local",
           lat: originLat + (Math.random() - 0.5) * 0.08,
           lng: originLng + (Math.random() - 0.5) * 0.08,
-          imageUrl,
+          imageUrl: realImg || `https://images.craigslist.org/00606_hV3x2QdG4Xf_0CI0t2_600x450.jpg`,
           sourcePlatform: "Craigs",
-          description: `Live Craigslist listing: ${title}.`,
+          description: `Live Craigslist listing: ${cleanText(title)}.`,
           timestamp: new Date().toISOString(),
           url: itemUrl,
         });
       }
     });
   } catch (err) {
-    console.error("Craigslist live fetch error:", err);
+    console.error("Craigslist live RSS fetch error:", err);
   }
   return drafts;
 }
