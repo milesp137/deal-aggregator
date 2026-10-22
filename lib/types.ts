@@ -22,6 +22,7 @@ export interface Listing {
   timestamp: string;
   /** Market median used for scoring; null when no comparable data exists. */
   marketMedian: number | null;
+  url?: string;
 }
 
 /** A power-user rule: "tell me when <keyword> shows up under <maxPrice>". */
