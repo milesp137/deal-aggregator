@@ -2,7 +2,7 @@
 
 import axios from "axios";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { AlertTriangle, BellRing, Flame, PackageSearch, Radar, ShieldAlert, X } from "lucide-react";
+import { AlertTriangle, BellRing, Flame, PackageSearch, Radar, ShieldAlert, Sparkles, X } from "lucide-react";
 import AlertPanel from "@/components/AlertPanel";
 import ControlBar from "@/components/ControlBar";
 import ListingCard from "@/components/ListingCard";
@@ -221,6 +221,16 @@ export default function DashboardPage() {
             Alerts
             <span className="rounded-full bg-black/30 px-2 py-0.5 text-xs">{activeAlertCount}</span>
           </button>
+
+          <a
+            href="https://buy.stripe.com/7sYfZhba5bcVbjSd9U7bW01"
+            target="_blank"
+            rel="noopener noreferrer"
+            className="inline-flex items-center gap-2 rounded-lg bg-gradient-to-r from-orange-400 via-orange-500 to-amber-600 px-4 py-2 text-sm font-semibold text-white shadow-lg shadow-orange-500/25 transition hover:brightness-110 focus:outline-none focus-visible:ring-2 focus-visible:ring-orange-300"
+          >
+            <Sparkles className="h-4 w-4" />
+            Pro Upgrade
+          </a>
         </div>
       </header>
 
