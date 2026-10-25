@@ -31,10 +31,24 @@ export function trimmedMedian(prices: number[]): number {
   return core.length % 2 === 1 ? core[mid] : (core[mid - 1] + core[mid]) / 2;
 }
 
+/**
+ * Listings priced more than this many times above or below the middle are probably a different
+ * kind of item (a $70 mouse-pad plate among $400 wheels), so they are left out of the average.
+ * Deliberately wide: only clearly different items are dropped, not merely cheap or pricey ones.
+ */
+const OUTLIER_FACTOR = 3;
+
+/** Priced under this fraction of similar listings: a different item or too good to be true. */
+const VERY_LOW_RATIO = 0.25;
+
 export function buildReference(peerPrices: number[], marketMedian: number | null): PriceReference | null {
   if (peerPrices.length >= MIN_PEERS) {
     const sorted = [...peerPrices].sort((a, b) => a - b);
-    return { median: trimmedMedian(sorted), source: "peers", peerPrices: sorted };
+    const rough = trimmedMedian(sorted);
+    const similar = sorted.filter((p) => p >= rough / OUTLIER_FACTOR && p <= rough * OUTLIER_FACTOR);
+    // Only use the filtered set if enough comparable listings remain.
+    const core = similar.length >= MIN_PEERS ? similar : sorted;
+    return { median: trimmedMedian(core), source: "peers", peerPrices: core };
   }
   if (marketMedian !== null && marketMedian > 0) {
     return { median: marketMedian, source: "market", peerPrices: null };
@@ -113,6 +127,7 @@ const usd = (value: number) => `$${Math.round(value).toLocaleString("en-US")}`;
 export function scoreListing(input: ScoreInput, reference: PriceReference | null, now: number): ScoreResult {
   const reasons: ScoreReason[] = [];
   let score = priceScore(input.price, reference);
+  let veryLow = false;
 
   if (reference && reference.median > 0) {
     const ratio = input.price / reference.median;
@@ -121,7 +136,14 @@ export function scoreListing(input: ScoreInput, reference: PriceReference | null
       reference.source === "peers"
         ? `similar listings in this search (${reference.peerPrices?.length ?? 0} compared)`
         : "this kind of item (market estimate)";
-    if (ratio <= 0.97) {
+    if (reference.source === "peers" && ratio < VERY_LOW_RATIO) {
+      // Not a real bargain: far too cheap to be the same thing as the other results.
+      veryLow = true;
+      reasons.push({
+        text: `Priced at only ${Math.round(ratio * 100)}% of similar listings, so it's probably a different item (an accessory or part) or too good to be true`,
+        tone: "bad",
+      });
+    } else if (ratio <= 0.97) {
       reasons.push({ text: `${percent}% below the typical ${usd(reference.median)} for ${basis}`, tone: "good" });
     } else if (ratio >= 1.03) {
       reasons.push({ text: `${percent}% above the typical ${usd(reference.median)} for ${basis}`, tone: "bad" });
@@ -182,6 +204,8 @@ export function scoreListing(input: ScoreInput, reference: PriceReference | null
     score -= 0.5; // no real photo
     reasons.push({ text: "No real photo (-0.5)", tone: "bad" });
   }
+
+  if (veryLow) score = Math.min(score, 4);
 
   // Accessories and "made for it" parts aren't comparable to the item, so they can't be steals.
   const cap = input.relevanceTier === 2 ? 3 : input.relevanceTier === 1 ? 5 : null;

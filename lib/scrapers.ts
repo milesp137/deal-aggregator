@@ -195,12 +195,28 @@ interface EbaySummary {
   title: string;
   price?: { value: string; currency: string };
   image?: { imageUrl: string };
+  additionalImages?: { imageUrl: string }[];
   thumbnailImages?: { imageUrl: string }[];
   itemWebUrl?: string;
   itemLocation?: { city?: string; stateOrProvince?: string; postalCode?: string; country?: string };
   itemCreationDate?: string;
   shortDescription?: string;
   condition?: string;
+}
+
+/** A photo used by this many listings in one search is a seller's stock image, not the item. */
+const SHARED_IMAGE_MIN_USES = 3;
+
+const EBAY_IMAGE_SIZE = /\/s-l\d+\.(jpg|jpeg|png|webp)(?=$|\?)/i;
+
+/** Identifies a picture regardless of the size variant in its URL. */
+function ebayImageKey(url: string): string {
+  return url.match(/\/g\/([^/]+)\//)?.[1] ?? url.replace(EBAY_IMAGE_SIZE, "");
+}
+
+/** eBay's API hands out small 225px thumbnails; ask for a sharper size. */
+function sharpenEbayImage(url: string): string {
+  return url.replace(EBAY_IMAGE_SIZE, "/s-l500.$1");
 }
 
 let ebayToken: { value: string; expiresAt: number } | null = null;
@@ -234,20 +250,40 @@ async function getEbayToken(): Promise<string> {
  * EBAY_CLIENT_SECRET (free at developer.ebay.com). Each listing links to its item page
  * (itemWebUrl) and uses the item's primary photo.
  */
-export async function scrapeEbay(query: string, limit = 20): Promise<ListingDraft[]> {
+export async function scrapeEbay(query: string, limit = 20, country = ""): Promise<ListingDraft[]> {
   const token = await getEbayToken();
+  // `country` (ISO code) limits results to items located there; empty means anywhere.
+  const filters = ["buyingOptions:{FIXED_PRICE}", ...(/^[A-Z]{2}$/.test(country) ? [`itemLocationCountry:${country}`] : [])];
   const url =
     "https://api.ebay.com/buy/browse/v1/item_summary/search" +
-    `?q=${encodeURIComponent(query)}&limit=${limit}&sort=newlyListed&filter=buyingOptions%3A%7BFIXED_PRICE%7D`;
+    `?q=${encodeURIComponent(query)}&limit=${limit}&sort=newlyListed&filter=${encodeURIComponent(filters.join(","))}`;
   const response = await fetchWithTimeout(url, {
     headers: { Authorization: `Bearer ${token}`, "X-EBAY-C-MARKETPLACE-ID": "EBAY_US" },
   });
   if (!response.ok) throw new Error(`eBay search returned ${response.status}`);
   const json = (await response.json()) as { itemSummaries?: EbaySummary[] };
 
-  return (json.itemSummaries ?? []).flatMap((item): ListingDraft[] => {
+  const summaries = json.itemSummaries ?? [];
+
+  // Some sellers (shops especially) upload one stock picture, such as "image not available" or
+  // their logo, as the photo on every listing. A picture used by several listings in the same
+  // results isn't a photo of the item, so prefer one of the item's other photos instead.
+  const imageUses = new Map<string, number>();
+  for (const item of summaries) {
+    const first = item.image?.imageUrl;
+    if (first) imageUses.set(ebayImageKey(first), (imageUses.get(ebayImageKey(first)) ?? 0) + 1);
+  }
+  const isSharedImage = (url: string) => (imageUses.get(ebayImageKey(url)) ?? 0) >= SHARED_IMAGE_MIN_USES;
+
+  return summaries.flatMap((item): ListingDraft[] => {
     const price = item.price ? parsePrice(item.price.value) : null;
     if (price === null || !item.itemWebUrl) return [];
+    const photos = [
+      item.image?.imageUrl,
+      ...(item.additionalImages ?? []).map((image) => image.imageUrl),
+      ...(item.thumbnailImages ?? []).map((image) => image.imageUrl),
+    ].filter((url): url is string => Boolean(url));
+    const ownPhoto = photos.find((url) => !isSharedImage(url));
     const title = cleanText(item.title);
     const place = item.itemLocation;
     const location = [place?.city, place?.stateOrProvince].filter(Boolean).join(", ");
@@ -259,8 +295,7 @@ export async function scrapeEbay(query: string, limit = 20): Promise<ListingDraf
         location: location || (place?.country ? `Ships from ${place.country}` : "Ships from US"),
         lat: null,
         lng: null,
-        imageUrl:
-          item.image?.imageUrl || item.thumbnailImages?.[0]?.imageUrl || placeholderImage(title, item.itemId),
+        imageUrl: ownPhoto ? sharpenEbayImage(ownPhoto) : placeholderImage(title, item.itemId),
         sourcePlatform: "eBay",
         description: cleanText(item.shortDescription ?? item.condition ?? ""),
         timestamp: item.itemCreationDate

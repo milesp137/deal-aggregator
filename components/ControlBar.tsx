@@ -1,7 +1,8 @@
 "use client";
 
 import type { FormEvent } from "react";
-import { Check, Gauge, Lightbulb, Loader2, Lock, MapPin, Radar, RefreshCw, Search, ShieldOff } from "lucide-react";
+import CountryPicker from "@/components/CountryPicker";
+import { Check, Gauge, Globe, Lightbulb, Loader2, Lock, MapPin, Radar, RefreshCw, Search, ShieldOff } from "lucide-react";
 import { FREE_MAX_DISTANCE, type UpgradeReason } from "@/lib/plan";
 import { ALL_SOURCES, SORT_LABELS, SOURCE_NAMES, type SortMode, type SourcePlatform } from "@/lib/types";
 
@@ -36,6 +37,11 @@ interface ControlBarProps {
   recent: string[];
   onPickRecent: (query: string) => void;
   onClearRecent: () => void;
+  /** Only show items located in `country` (ISO code). */
+  countryOnly: boolean;
+  onCountryOnlyChange: (value: boolean) => void;
+  country: string;
+  onCountryChange: (code: string) => void;
 }
 
 export default function ControlBar(props: ControlBarProps) {
@@ -65,6 +71,10 @@ export default function ControlBar(props: ControlBarProps) {
     recent,
     onPickRecent,
     onClearRecent,
+    countryOnly,
+    onCountryOnlyChange,
+    country,
+    onCountryChange,
   } = props;
 
   /** Digits only, so a stray letter or minus sign can't break the search. */
@@ -258,6 +268,25 @@ export default function ControlBar(props: ControlBarProps) {
           <ShieldOff className="h-3.5 w-3.5" />
           Hide suspected scams
         </label>
+
+        <div className="inline-flex flex-wrap items-center gap-2">
+          <label className="inline-flex cursor-pointer items-center gap-2">
+            <input
+              type="checkbox"
+              checked={countryOnly}
+              onChange={(event) => onCountryOnlyChange(event.target.checked)}
+              className="h-4 w-4 rounded border-line bg-raised"
+            />
+            <Globe className="h-3.5 w-3.5" />
+            Only items in
+          </label>
+          <CountryPicker value={country} onChange={onCountryChange} disabled={!countryOnly} />
+          {countryOnly && country !== "US" && (
+            <span className="text-xs text-zinc-500">
+              Facebook Marketplace and Craigslist are US-only, so only eBay is searched.
+            </span>
+          )}
+        </div>
 
         <div className="inline-flex items-center gap-2">
           <span className="text-xs font-semibold uppercase tracking-wider text-zinc-400">Price</span>

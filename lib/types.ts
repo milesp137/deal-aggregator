@@ -80,6 +80,8 @@ export interface ScrapeRequest {
   minPrice?: number;
   maxPrice?: number;
   sort?: SortMode;
+  /** ISO country code; only items located there. Empty means anywhere. */
+  country?: string;
   originLat?: number;
   originLng?: number;
 }

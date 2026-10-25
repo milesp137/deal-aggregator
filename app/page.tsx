@@ -8,7 +8,6 @@ import {
   Flame,
   Heart,
   PackageSearch,
-  Radar,
   RotateCcw,
   ShieldAlert,
   Sparkles,
@@ -18,12 +17,14 @@ import AlertPanel from "@/components/AlertPanel";
 import ControlBar from "@/components/ControlBar";
 import ListingCard from "@/components/ListingCard";
 import LocationBar from "@/components/LocationBar";
+import Logo from "@/components/Logo";
 import LockedTeaser from "@/components/LockedTeaser";
 import UpgradeModal from "@/components/UpgradeModal";
 import { matchesAlert } from "@/lib/alerts";
 import { api, clearLicense, getLicense, setLicense } from "@/lib/client";
 import { formatPrice, timeAgo } from "@/lib/format";
 import { BILLING_PORTAL_URL, FREE_MAX_DISTANCE, PLAN_LIMITS, SUPPORT_EMAIL, type Plan, type UpgradeReason } from "@/lib/plan";
+import { isCountryCode } from "@/lib/countries";
 import { useLocation } from "@/lib/useLocation";
 import { addRecent, clearRecent, loadPrefs, loadRecent, usePersistPrefs } from "@/lib/usePrefs";
 import { useSaved } from "@/lib/useSaved";
@@ -46,6 +47,8 @@ interface SavedPrefs {
   sort: SortMode;
   minPrice: string;
   maxPrice: string;
+  countryOnly: boolean;
+  country: string;
 }
 
 const AUTO_REFRESH_MS = 30_000;
@@ -73,6 +76,8 @@ export default function DashboardPage() {
   const [sort, setSort] = useState<SortMode>("best");
   const [minPrice, setMinPrice] = useState("");
   const [maxPrice, setMaxPrice] = useState("");
+  const [countryOnly, setCountryOnly] = useState(false);
+  const [country, setCountry] = useState("US");
   const [recent, setRecent] = useState<string[]>([]);
   const [prefsLoaded, setPrefsLoaded] = useState(false);
 
@@ -111,6 +116,7 @@ export default function DashboardPage() {
     sort,
     minPrice,
     maxPrice,
+    country: "",
     originLat: location?.lat,
     originLng: location?.lng,
   });
@@ -127,10 +133,23 @@ export default function DashboardPage() {
       sort,
       minPrice,
       maxPrice,
+      country: countryOnly ? country : "",
       originLat: location?.lat,
       originLng: location?.lng,
     };
-  }, [query, maxDistance, minScore, sources, sort, minPrice, maxPrice, location?.lat, location?.lng]);
+  }, [
+    query,
+    maxDistance,
+    minScore,
+    sources,
+    sort,
+    minPrice,
+    maxPrice,
+    countryOnly,
+    country,
+    location?.lat,
+    location?.lng,
+  ]);
 
   // Restore the visitor's filters and recent searches from their last visit.
   useEffect(() => {
@@ -141,11 +160,16 @@ export default function DashboardPage() {
     if (prefs.sort && prefs.sort in SORT_LABELS) setSort(prefs.sort);
     if (typeof prefs.minPrice === "string") setMinPrice(prefs.minPrice.replace(/\D/g, "").slice(0, 7));
     if (typeof prefs.maxPrice === "string") setMaxPrice(prefs.maxPrice.replace(/\D/g, "").slice(0, 7));
+    if (typeof prefs.countryOnly === "boolean") setCountryOnly(prefs.countryOnly);
+    if (isCountryCode(prefs.country)) setCountry(prefs.country);
     setRecent(loadRecent());
     setPrefsLoaded(true);
   }, []);
 
-  usePersistPrefs({ maxDistance, minScore, hideScams, sort, minPrice, maxPrice }, prefsLoaded);
+  usePersistPrefs(
+    { maxDistance, minScore, hideScams, sort, minPrice, maxPrice, countryOnly, country },
+    prefsLoaded,
+  );
 
   // Remember which sites the visitor wants between visits.
   useEffect(() => {
@@ -188,6 +212,7 @@ export default function DashboardPage() {
         sort: params.sort,
         minPrice: Number(params.minPrice) || 0,
         maxPrice: Number(params.maxPrice) || 0,
+        country: params.country,
         originLat: params.originLat,
         originLng: params.originLng,
       });
@@ -276,6 +301,8 @@ export default function DashboardPage() {
     sort,
     minPrice,
     maxPrice,
+    countryOnly,
+    country,
     runScrape,
   ]);
 
@@ -327,6 +354,7 @@ export default function DashboardPage() {
     setMinPrice("");
     setMaxPrice("");
     setSort("best");
+    setCountryOnly(false);
     changeSources(ALL_SOURCES);
   }, [changeSources]);
 
@@ -422,9 +450,7 @@ export default function DashboardPage() {
       {/* Header */}
       <header className="mb-6 flex flex-wrap items-center justify-between gap-4">
         <div className="flex items-center gap-3">
-          <div className="grid h-11 w-11 place-items-center rounded-xl bg-brand shadow-glow">
-            <Radar className="h-6 w-6 text-white" />
-          </div>
+          <Logo className="h-11 w-11 rounded-xl shadow-glow" />
           <div>
             <h1 className="text-2xl font-extrabold tracking-tight text-white">DealRadar</h1>
             <p className="text-sm text-zinc-400">
@@ -530,6 +556,10 @@ export default function DashboardPage() {
           recent={recent}
           onPickRecent={pickRecent}
           onClearRecent={clearRecentSearches}
+          countryOnly={countryOnly}
+          onCountryOnlyChange={setCountryOnly}
+          country={country}
+          onCountryChange={setCountry}
         />
 
         {alertsOpen && (

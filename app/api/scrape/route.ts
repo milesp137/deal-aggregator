@@ -21,6 +21,7 @@ import { DEFAULT_ORIGIN, lookupMarket } from "@/lib/market";
 import { scrapeFacebookMarketplace } from "@/lib/facebook";
 import type { Plan } from "@/lib/plan";
 import { limitsFor, planForRequest } from "@/lib/pro";
+import { isCountryCode } from "@/lib/countries";
 import { classifyTitle, MIN_ON_TARGET_TO_HIDE } from "@/lib/relevance";
 import { buildReference, scoreListing, type PriceReference } from "@/lib/scoring";
 import {
@@ -383,6 +384,7 @@ function parseRequest(input: Record<string, unknown>): Required<ScrapeRequest> {
     minPrice: clamp(Math.round(toNumber(input.minPrice, 0)), 0, 10_000_000),
     maxPrice: clamp(Math.round(toNumber(input.maxPrice, 0)), 0, 10_000_000),
     sort: SORT_MODES.includes(input.sort as SortMode) ? (input.sort as SortMode) : "best",
+    country: isCountryCode(input.country) ? input.country : "",
     originLat: clamp(toNumber(input.originLat, DEFAULT_ORIGIN.lat), -90, 90),
     originLng: clamp(toNumber(input.originLng, DEFAULT_ORIGIN.lng), -180, 180),
   };
@@ -426,7 +428,10 @@ async function runScrape(request: Required<ScrapeRequest>, plan: Plan): Promise<
   const perKeywordLimit = request.query ? undefined : DEFAULT_PER_KEYWORD_LIMIT;
 
   // Sources the user switched off are never contacted (faster, and saves proxy bandwidth).
-  const wants = (platform: SourcePlatform) => request.sources.includes(platform);
+  // Facebook Marketplace and Craigslist only cover the US, so a non-US country means eBay only.
+  const usOnlySitesAllowed = request.country === "" || request.country === "US";
+  const wants = (platform: SourcePlatform) =>
+    request.sources.includes(platform) && (platform === "eBay" || usOnlySitesAllowed);
   const skipped = async (): Promise<SourceResult> => ({ drafts: [], live: false });
 
   const [ebay, marketplace, craigslist] = await Promise.all([
@@ -436,7 +441,9 @@ async function runScrape(request: Required<ScrapeRequest>, plan: Plan): Promise<
           "eBay",
           isEbayConfigured()
             ? () =>
-              scrapeKeywords(keywords, (keyword) => scrapeEbay(keyword, perKeywordLimit ?? EBAY_SEARCH_LIMIT))
+              scrapeKeywords(keywords, (keyword) =>
+                scrapeEbay(keyword, perKeywordLimit ?? EBAY_SEARCH_LIMIT, request.country),
+              )
             : null,
           "eBay API keys not configured (set EBAY_CLIENT_ID and EBAY_CLIENT_SECRET)",
           async () => normalizeEbay(await fetchSource(() => getEbayPayload(now)), request.query),
