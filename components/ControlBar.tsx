@@ -1,7 +1,7 @@
 "use client";
 
 import type { FormEvent } from "react";
-import { Check, Gauge, Loader2, Lock, MapPin, Radar, RefreshCw, Search, ShieldOff } from "lucide-react";
+import { Check, Gauge, Lightbulb, Loader2, Lock, MapPin, Radar, RefreshCw, Search, ShieldOff } from "lucide-react";
 import { FREE_MAX_DISTANCE, type UpgradeReason } from "@/lib/plan";
 import { ALL_SOURCES, SOURCE_NAMES, type SourcePlatform } from "@/lib/types";
 
@@ -80,9 +80,19 @@ export default function ControlBar(props: ControlBarProps) {
             className="field"
             autoComplete="off"
           />
-          {!query && (
+          {!query.trim() ? (
             <span className="mt-1.5 block text-xs text-zinc-500">
               Leave blank to browse 240sx, coilovers, turbo &amp; wheels
+            </span>
+          ) : (
+            <span className="mt-1.5 flex items-start gap-1 text-xs text-zinc-500">
+              <Lightbulb className="mt-0.5 h-3 w-3 shrink-0 text-amber-400" />
+              <span>
+                <strong className="font-semibold text-zinc-300">Tip:</strong> be precise about what
+                you&apos;re looking up!
+                {query.trim().split(/\s+/).length === 1 &&
+                  ` A broad search like “${query.trim()}” also matches games, cases and parts. Add what you want, like “${query.trim()} console”.`}
+              </span>
             </span>
           )}
         </label>

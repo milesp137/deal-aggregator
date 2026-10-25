@@ -19,6 +19,7 @@ import { DEFAULT_ORIGIN, lookupMarket } from "@/lib/market";
 import { scrapeFacebookMarketplace } from "@/lib/facebook";
 import type { Plan } from "@/lib/plan";
 import { limitsFor, planForRequest } from "@/lib/pro";
+import { looksOffTarget, MIN_ON_TARGET_TO_HIDE } from "@/lib/relevance";
 import {
   isEbayConfigured,
   scrapeCraigslist,
@@ -40,6 +41,8 @@ async function fetchSource<T>(produce: () => T): Promise<T> {
 /** Topics browsed when the search box is left blank. */
 const DEFAULT_KEYWORDS = ["240sx", "coilovers", "turbo", "wheels"];
 const DEFAULT_PER_KEYWORD_LIMIT = 6;
+/** Typed searches fetch extra eBay results so the relevance filter has plenty to choose from. */
+const EBAY_SEARCH_LIMIT = 50;
 
 /**
  * Runs one scrape per keyword in parallel and merges the results. Individual keyword failures
@@ -393,7 +396,8 @@ async function runScrape(request: Required<ScrapeRequest>, plan: Plan): Promise<
       : liveOrSample(
           "eBay",
           isEbayConfigured()
-            ? () => scrapeKeywords(keywords, (keyword) => scrapeEbay(keyword, perKeywordLimit))
+            ? () =>
+              scrapeKeywords(keywords, (keyword) => scrapeEbay(keyword, perKeywordLimit ?? EBAY_SEARCH_LIMIT))
             : null,
           "eBay API keys not configured (set EBAY_CLIENT_ID and EBAY_CLIENT_SECRET)",
           async () => normalizeEbay(await fetchSource(() => getEbayPayload(now)), request.query),
@@ -459,7 +463,21 @@ async function runScrape(request: Required<ScrapeRequest>, plan: Plan): Promise<
     return terms.every((term) => haystack.includes(term));
   });
 
-  const enriched: Listing[] = matched.map((draft) => {
+  // Broad searches ("psp") also match games, cases and chargers. Rank those last, and hide them
+  // entirely once there are enough real results. Blank searches are left alone.
+  const offTargetIds = new Set<string>();
+  if (request.query) {
+    for (const draft of matched) {
+      if (looksOffTarget(draft.title, request.query)) offTargetIds.add(draft.id);
+    }
+  }
+  const onTargetCount = matched.length - offTargetIds.size;
+  const refined =
+    onTargetCount >= MIN_ON_TARGET_TO_HIDE
+      ? matched.filter((draft) => !offTargetIds.has(draft.id))
+      : matched;
+
+  const enriched: Listing[] = refined.map((draft) => {
     const market = lookupMarket(draft.title);
     const median = market?.median ?? null;
     const verdict = scanForScam(draft, median, duplicateIds);
@@ -503,6 +521,7 @@ async function runScrape(request: Required<ScrapeRequest>, plan: Plan): Promise<
     )
     .sort(
       (a, b) =>
+        Number(offTargetIds.has(a.id)) - Number(offTargetIds.has(b.id)) ||
         b.dealScore - a.dealScore ||
         new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime(),
     );

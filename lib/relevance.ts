@@ -1,0 +1,94 @@
+/**
+ * Search intent helpers. A broad query like "psp" matches thousands of games, cases and chargers
+ * that happen to have "psp" in the title. These heuristics spot listings that are probably an
+ * accessory, software or junk rather than the thing itself, so they can be pushed down (or hidden
+ * when there are plenty of better results). The title is the only signal available on every site.
+ *
+ * Nothing here is ever applied to blank searches, and a term the shopper typed is never held
+ * against a listing: searching "psp games" keeps games, "psp case" keeps cases.
+ */
+
+/** Accessories and software. A title that also says console/system/handheld is left alone. */
+const ACCESSORY_TERMS = [
+  "games?",
+  "cartridges?",
+  "cases?",
+  "covers?",
+  "chargers?",
+  "cables?",
+  "adapters?",
+  "batter(?:y|ies)",
+  "screen protectors?",
+  "tempered glass",
+  "protectors?",
+  "skins?",
+  "stickers?",
+  "decals?",
+  "manuals?",
+  "box only",
+  "empty box",
+  "styluses|stylus",
+  "memory cards?",
+  "faceplates?",
+  "shells?",
+  "housing",
+  "mod kits?",
+  "mod ?chips?",
+  "controllers?",
+  "headsets?",
+  "pouch",
+  "carrying",
+  "replacement",
+];
+
+/** Condition problems: unwanted for deal hunting even when the title says "console". */
+const CONDITION_TERMS = ["for parts", "parts only", "not working", "broken", "cracked screen"];
+
+const ACCESSORY = new RegExp(`\\b(?:${ACCESSORY_TERMS.join("|")})\\b`, "i");
+const CONDITION = new RegExp(`\\b(?:${CONDITION_TERMS.join("|")})\\b`, "i");
+const PROTECTED = /\b(?:console|system|handheld)\b/i;
+/** "Screen protector FOR psp": the thing being searched is only what the item is made for. */
+const FOR_WORD = /\bfor\b(?!\s+(?:sale|trade|parts|repair|only))/i;
+
+function termsOf(query: string): string[] {
+  return query.toLowerCase().split(/\s+/).filter(Boolean);
+}
+
+/** Removes the words the shopper typed, so they are not counted against a listing. */
+function withoutQueryTerms(title: string, terms: string[]): string {
+  let text = title;
+  for (const term of terms) {
+    if (term.length < 2) continue;
+    const escaped = term.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    text = text.replace(new RegExp(`\\b${escaped}\\b`, "gi"), " ");
+  }
+  return text;
+}
+
+/** True when the title looks like an accessory, software or broken unit instead of the item itself. */
+export function looksOffTarget(title: string, query: string): boolean {
+  const terms = termsOf(query);
+  if (terms.length === 0) return false;
+
+  // Compare only the words the shopper did NOT type.
+  const rest = withoutQueryTerms(title, terms);
+
+  if (CONDITION.test(rest)) return true;
+  if (ACCESSORY.test(rest) && !PROTECTED.test(title)) return true;
+
+  if (!terms.includes("for")) {
+    const lower = title.toLowerCase();
+    const forMatch = FOR_WORD.exec(lower);
+    if (forMatch && forMatch.index > 0) {
+      const firstTerm = Math.min(
+        ...terms.map((term) => lower.indexOf(term)).filter((index) => index >= 0),
+        Number.POSITIVE_INFINITY,
+      );
+      if (forMatch.index < firstTerm) return true;
+    }
+  }
+  return false;
+}
+
+/** Below this many on-target results, off-target ones stay visible (just ranked last). */
+export const MIN_ON_TARGET_TO_HIDE = 6;
