@@ -86,7 +86,7 @@ export default function DashboardPage() {
   const [prefsLoaded, setPrefsLoaded] = useState(false);
 
   // Account (email sign-in). Anonymous visitors work exactly as before.
-  const { account, loaded: accountLoaded, updatePrefs, signOut } = useAccount();
+  const { account, loaded: accountLoaded, restoreFromLicense, updatePrefs, signOut } = useAccount();
   const accountEmail = account?.email ?? null;
   const [signInOpen, setSignInOpen] = useState(false);
 
@@ -379,6 +379,7 @@ export default function DashboardPage() {
           if (data.valid) {
             setLicense(fragment);
             setPlan("pro");
+            void restoreFromLicense();
           }
         })
         .catch(() => undefined)
@@ -392,7 +393,7 @@ export default function DashboardPage() {
         .then(({ data }) => (data.valid ? setPlan("pro") : clearLicense()))
         .catch(() => undefined);
     }
-  }, []);
+  }, [restoreFromLicense]);
 
   const requirePro = useCallback((reason: UpgradeReason) => setUpgradeReason(reason), []);
 
@@ -444,8 +445,9 @@ export default function DashboardPage() {
     setPlan("pro");
     setUpgradeReason(null);
     setNudge(false);
+    void restoreFromLicense(); // activating a key also signs in as the email that bought it
     void runScrape();
-  }, [runScrape]);
+  }, [runScrape, restoreFromLicense]);
 
   const requestNotifications = useCallback(() => {
     if (!("Notification" in window)) return;

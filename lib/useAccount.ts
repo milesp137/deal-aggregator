@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useState } from "react";
-import { api } from "./client";
+import { api, clearLicense, getLicense } from "./client";
 import type { Plan } from "./plan";
 
 export interface Account {
@@ -19,6 +19,28 @@ interface MeResponse {
   marketing?: boolean;
 }
 
+function toAccount(data: MeResponse): Account | null {
+  if (!data.signedIn || !data.email) return null;
+  return {
+    email: data.email,
+    plan: data.plan === "pro" ? "pro" : "free",
+    emailAlerts: data.emailAlerts !== false,
+    marketing: data.marketing === true,
+  };
+}
+
+/** Signs in with the Pro license key saved in this browser, as the email that bought it. */
+async function accountFromLicense(): Promise<Account | null> {
+  const key = getLicense();
+  if (!key) return null;
+  try {
+    const { data } = await api.post<MeResponse>("/api/auth/license", { key });
+    return toAccount(data);
+  } catch {
+    return null;
+  }
+}
+
 /** The signed-in account (null when browsing anonymously) and helpers to change its settings. */
 export function useAccount() {
   const [account, setAccount] = useState<Account | null>(null);
@@ -26,24 +48,29 @@ export function useAccount() {
 
   useEffect(() => {
     let cancelled = false;
-    api
-      .get<MeResponse>("/api/auth/me")
-      .then(({ data }) => {
-        if (cancelled || !data.signedIn || !data.email) return;
-        setAccount({
-          email: data.email,
-          plan: data.plan === "pro" ? "pro" : "free",
-          emailAlerts: data.emailAlerts !== false,
-          marketing: data.marketing === true,
-        });
-      })
-      .catch(() => undefined)
-      .finally(() => {
-        if (!cancelled) setLoaded(true);
-      });
+    void (async () => {
+      let found: Account | null = null;
+      try {
+        found = toAccount((await api.get<MeResponse>("/api/auth/me")).data);
+      } catch {
+        /* treated as signed out */
+      }
+      // No session (expired, cleared cookies, new browser) but a Pro key is saved here:
+      // that's enough to sign back in, so the customer never needs another email link.
+      if (!found) found = await accountFromLicense();
+      if (cancelled) return;
+      setAccount(found);
+      setLoaded(true);
+    })();
     return () => {
       cancelled = true;
     };
+  }, []);
+
+  /** Called right after a license key is activated, so the account comes with it. */
+  const restoreFromLicense = useCallback(async () => {
+    const found = await accountFromLicense();
+    if (found) setAccount(found);
   }, []);
 
   /** Optimistic update; rolls back if the server rejects it. */
@@ -64,6 +91,8 @@ export function useAccount() {
   );
 
   const signOut = useCallback(async () => {
+    // The saved key would sign this browser straight back in, so signing out forgets it too.
+    clearLicense();
     try {
       await api.post("/api/auth/logout", {});
     } catch {
@@ -72,5 +101,5 @@ export function useAccount() {
     window.location.reload();
   }, []);
 
-  return { account, loaded, updatePrefs, signOut };
+  return { account, loaded, restoreFromLicense, updatePrefs, signOut };
 }

@@ -150,6 +150,44 @@ export async function findRecordsByEmail(email: string): Promise<LicenseRecord[]
   return records.sort((a, b) => b.createdAt.localeCompare(a.createdAt));
 }
 
+const keyEmailKey = (key: string) => `dealradar:license:keyemail:${key}`;
+
+/**
+ * The email a license key was bought with, or null (e.g. keys that only exist in PRO_LICENSE_KEYS).
+ * The first lookup for a key scans the purchase records once; the answer is then cached.
+ * Callers must check the key is active first so random keys never trigger the scan.
+ */
+export async function emailForKey(key: string): Promise<string | null> {
+  const redis = getRedis();
+  if (!redis) {
+    for (const record of memory().sessions.values()) {
+      if (record.key === key && record.email) return normalizeEmail(record.email);
+    }
+    return null;
+  }
+
+  const cached = await redis.get<string>(keyEmailKey(key));
+  if (cached) return cached;
+
+  let cursor = "0";
+  let rounds = 0;
+  do {
+    const [next, keys] = await redis.scan(cursor, { match: `${SESSION_PREFIX}*`, count: 200 });
+    cursor = String(next);
+    if (keys.length > 0) {
+      const records = await redis.mget<(LicenseRecord | null)[]>(...keys);
+      const match = records.find((record) => record?.key === key && record.email);
+      if (match?.email) {
+        const email = normalizeEmail(match.email);
+        await redis.set(keyEmailKey(key), email);
+        return email;
+      }
+    }
+    rounds += 1;
+  } while (cursor !== "0" && rounds < 50);
+  return null;
+}
+
 export async function isKeyActive(key: string): Promise<boolean> {
   const redis = getRedis();
   if (redis) return (await redis.sismember(PRO_KEYS_SET, key)) === 1;
