@@ -56,6 +56,14 @@ export interface ScrapeMeta {
   /** Listings gathered from all sources before any filtering. */
   totalScraped: number;
   returned: number;
+  /** Plan used for this response; limits are enforced server-side. */
+  plan: "free" | "pro";
+  /** Matching listings hidden because of the plan's result cap. */
+  lockedCount: number;
+  /** Listings hidden because they were posted inside the free plan's delay window. */
+  delayedCount: number;
+  /** Of the delayed listings, how many scored 7+ (good deals). */
+  delayedHotCount: number;
   scamCount: number;
   durationMs: number;
   scrapedAt: string;

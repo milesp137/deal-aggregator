@@ -1,8 +1,9 @@
 "use client";
 
 import { useState, type FormEvent } from "react";
-import { Bell, BellOff, BellRing, Loader2, Plus, Trash2 } from "lucide-react";
+import { Bell, BellOff, BellRing, Loader2, Lock, Plus, Trash2 } from "lucide-react";
 import type { AlertKeyword } from "@/lib/types";
+import type { UpgradeReason } from "@/lib/plan";
 import { formatPrice } from "@/lib/format";
 
 interface AlertPanelProps {
@@ -14,6 +15,9 @@ interface AlertPanelProps {
   onCreate: (input: { keyword: string; maxPrice: number | null; minDealScore: number }) => Promise<void>;
   onToggle: (id: string, enabled: boolean) => Promise<void>;
   onDelete: (id: string) => Promise<void>;
+  isPro: boolean;
+  maxAlerts: number;
+  onProRequired: (reason: UpgradeReason) => void;
 }
 
 export default function AlertPanel({
@@ -24,6 +28,9 @@ export default function AlertPanel({
   onCreate,
   onToggle,
   onDelete,
+  isPro,
+  maxAlerts,
+  onProRequired,
 }: AlertPanelProps) {
   const [keyword, setKeyword] = useState("");
   const [maxPrice, setMaxPrice] = useState("");
@@ -33,6 +40,10 @@ export default function AlertPanel({
 
   const submit = async (event: FormEvent) => {
     event.preventDefault();
+    if (alerts.length >= maxAlerts) {
+      onProRequired("alerts");
+      return;
+    }
     const trimmed = keyword.trim();
     if (!trimmed) {
       setFormError("Enter a keyword to watch for.");
@@ -72,17 +83,25 @@ export default function AlertPanel({
           </p>
         </div>
 
-        {notificationPermission === "default" && (
+        {!isPro && notificationPermission !== "unsupported" && (
+          <button type="button" onClick={() => onProRequired("notifications")} className="btn-ghost">
+            <Lock className="h-4 w-4 text-orange-300" /> Desktop notifications
+            <span className="rounded bg-orange-500/15 px-1.5 py-0.5 text-[10px] font-bold uppercase text-orange-300">
+              Pro
+            </span>
+          </button>
+        )}
+        {isPro && notificationPermission === "default" && (
           <button type="button" onClick={onRequestNotifications} className="btn-ghost">
             <Bell className="h-4 w-4" /> Enable desktop notifications
           </button>
         )}
-        {notificationPermission === "granted" && (
+        {isPro && notificationPermission === "granted" && (
           <span className="inline-flex items-center gap-1.5 rounded-lg bg-emerald-500/10 px-3 py-2 text-xs font-semibold text-emerald-300">
             <Bell className="h-3.5 w-3.5" /> Desktop notifications on
           </span>
         )}
-        {notificationPermission === "denied" && (
+        {isPro && notificationPermission === "denied" && (
           <span className="inline-flex items-center gap-1.5 rounded-lg bg-zinc-800 px-3 py-2 text-xs font-semibold text-zinc-400">
             <BellOff className="h-3.5 w-3.5" /> Notifications blocked in browser
           </span>
@@ -139,6 +158,21 @@ export default function AlertPanel({
         </button>
       </form>
       {formError && <p className="mt-2 text-sm text-red-400">{formError}</p>}
+      <p className="mt-2 text-xs text-zinc-500">
+        {alerts.length} of {maxAlerts} alerts used
+        {!isPro && (
+          <>
+            {" \u00b7 "}
+            <button
+              type="button"
+              onClick={() => onProRequired("alerts")}
+              className="font-semibold text-orange-300 hover:text-orange-200"
+            >
+              Get up to 25 with Pro
+            </button>
+          </>
+        )}
+      </p>
 
       <ul className="mt-5 divide-y divide-line rounded-xl border border-line bg-canvas/40">
         {alerts.length === 0 && (

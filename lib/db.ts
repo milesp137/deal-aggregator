@@ -1,39 +1,21 @@
 import { randomUUID } from "crypto";
-import { Redis } from "@upstash/redis";
+import { getRedis } from "./redis";
 import type { AlertKeyword } from "./types";
 
 /**
- * Alert-rule store. Never touches the file system (serverless runtimes like Vercel have a
- * read-only /var/task). Uses Upstash Redis when UPSTASH_REDIS_REST_URL/TOKEN are set, and
- * falls back to an in-memory array otherwise (per-instance, resets on cold start).
+ * Per-user alert-rule store. Never touches the file system (serverless runtimes like Vercel
+ * have a read-only /var/task). Uses Upstash Redis when configured and falls back to an
+ * in-memory map otherwise (per-instance, resets on cold start). Each browser has its own
+ * anonymous `ownerId`, so visitors never see each other's alerts.
  */
 
-const REDIS_KEY = "dealradar:alerts";
-
-const SEED: Omit<AlertKeyword, "id" | "createdAt">[] = [
-  { keyword: "coilover", maxPrice: 1200, minDealScore: 7, enabled: true },
-  { keyword: "turbo", maxPrice: 2000, minDealScore: 8, enabled: true },
-];
-
-function seedAlerts(): AlertKeyword[] {
-  const createdAt = new Date().toISOString();
-  return SEED.map((rule) => ({ ...rule, id: randomUUID(), createdAt }));
-}
-
-let redis: Redis | null = null;
-if (process.env.UPSTASH_REDIS_REST_URL && process.env.UPSTASH_REDIS_REST_TOKEN) {
-  try {
-    redis = Redis.fromEnv();
-  } catch {
-    redis = null;
-  }
-}
+const redisKey = (ownerId: string) => `dealradar:alerts:${ownerId}`;
 
 // In-memory fallback; kept on globalThis so dev hot-reloads don't reset it.
-const globalStore = globalThis as unknown as { __dealradarAlerts?: AlertKeyword[] };
+const globalStore = globalThis as unknown as { __dealradarAlerts?: Map<string, AlertKeyword[]> };
 
-function memory(): AlertKeyword[] {
-  if (!globalStore.__dealradarAlerts) globalStore.__dealradarAlerts = seedAlerts();
+function memory(): Map<string, AlertKeyword[]> {
+  if (!globalStore.__dealradarAlerts) globalStore.__dealradarAlerts = new Map();
   return globalStore.__dealradarAlerts;
 }
 
@@ -45,37 +27,37 @@ function withLock<T>(task: () => Promise<T>): Promise<T> {
   return run;
 }
 
-async function writeAll(alerts: AlertKeyword[]): Promise<void> {
+async function writeAll(ownerId: string, alerts: AlertKeyword[]): Promise<void> {
   // Always mirror to memory so a Redis outage degrades gracefully.
-  globalStore.__dealradarAlerts = alerts;
+  memory().set(ownerId, alerts);
+  const redis = getRedis();
   if (!redis) return;
   try {
-    await redis.set(REDIS_KEY, alerts);
+    await redis.set(redisKey(ownerId), alerts);
   } catch {
-    // Redis unavailable: memory copy above remains the source of truth for this instance.
+    // Redis unavailable: the memory copy remains the source of truth for this instance.
   }
 }
 
-async function readAll(): Promise<AlertKeyword[]> {
+async function readAll(ownerId: string): Promise<AlertKeyword[]> {
+  const redis = getRedis();
   if (redis) {
     try {
-      const stored = await redis.get<AlertKeyword[]>(REDIS_KEY);
+      const stored = await redis.get<AlertKeyword[]>(redisKey(ownerId));
       if (Array.isArray(stored)) {
-        globalStore.__dealradarAlerts = stored;
+        memory().set(ownerId, stored);
         return stored;
       }
-      const seeded = seedAlerts();
-      await writeAll(seeded);
-      return seeded;
+      return [];
     } catch {
       // fall through to in-memory data
     }
   }
-  return memory();
+  return memory().get(ownerId) ?? [];
 }
 
-export function listAlerts(): Promise<AlertKeyword[]> {
-  return withLock(readAll);
+export function listAlerts(ownerId: string): Promise<AlertKeyword[]> {
+  return withLock(() => readAll(ownerId));
 }
 
 export interface NewAlertInput {
@@ -84,9 +66,15 @@ export interface NewAlertInput {
   minDealScore: number;
 }
 
-export function createAlert(input: NewAlertInput): Promise<AlertKeyword> {
+/** Creates an alert unless the owner already has `maxAlerts`; returns null when at the limit. */
+export function createAlert(
+  ownerId: string,
+  input: NewAlertInput,
+  maxAlerts: number,
+): Promise<AlertKeyword | null> {
   return withLock(async () => {
-    const alerts = await readAll();
+    const alerts = await readAll(ownerId);
+    if (alerts.length >= maxAlerts) return null;
     const alert: AlertKeyword = {
       id: randomUUID(),
       keyword: input.keyword,
@@ -95,32 +83,33 @@ export function createAlert(input: NewAlertInput): Promise<AlertKeyword> {
       enabled: true,
       createdAt: new Date().toISOString(),
     };
-    await writeAll([alert, ...alerts]);
+    await writeAll(ownerId, [alert, ...alerts]);
     return alert;
   });
 }
 
 export function updateAlert(
+  ownerId: string,
   id: string,
   patch: Partial<Pick<AlertKeyword, "enabled" | "keyword" | "maxPrice" | "minDealScore">>,
 ): Promise<AlertKeyword | null> {
   return withLock(async () => {
-    const alerts = [...(await readAll())];
+    const alerts = [...(await readAll(ownerId))];
     const index = alerts.findIndex((alert) => alert.id === id);
     if (index === -1) return null;
     const updated = { ...alerts[index], ...patch };
     alerts[index] = updated;
-    await writeAll(alerts);
+    await writeAll(ownerId, alerts);
     return updated;
   });
 }
 
-export function deleteAlert(id: string): Promise<boolean> {
+export function deleteAlert(ownerId: string, id: string): Promise<boolean> {
   return withLock(async () => {
-    const alerts = await readAll();
+    const alerts = await readAll(ownerId);
     const next = alerts.filter((alert) => alert.id !== id);
     if (next.length === alerts.length) return false;
-    await writeAll(next);
+    await writeAll(ownerId, next);
     return true;
   });
 }

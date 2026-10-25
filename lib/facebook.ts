@@ -175,15 +175,16 @@ const cache = new Map<string, { at: number; drafts: ListingDraft[] }>();
 export async function scrapeFacebookMarketplace(
   query: string,
   origin: Origin,
+  limit: number = MAX_RESULTS,
 ): Promise<ListingDraft[]> {
   const city = nearestCity(origin);
   const cacheKey = `${city.slug}|${query.toLowerCase()}`;
   const cached = cache.get(cacheKey);
-  if (cached && Date.now() - cached.at < CACHE_TTL_MS) return cached.drafts;
+  if (cached && Date.now() - cached.at < CACHE_TTL_MS) return cached.drafts.slice(0, limit);
 
   const drafts = await scrapeUncached(query, city.slug);
   cache.set(cacheKey, { at: Date.now(), drafts });
-  return drafts;
+  return drafts.slice(0, limit);
 }
 
 class NoListingsError extends Error {}

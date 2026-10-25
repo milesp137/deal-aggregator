@@ -6,20 +6,32 @@ import { AlertTriangle, BellRing, Flame, PackageSearch, Radar, ShieldAlert, Spar
 import AlertPanel from "@/components/AlertPanel";
 import ControlBar from "@/components/ControlBar";
 import ListingCard from "@/components/ListingCard";
+import LocationBar from "@/components/LocationBar";
+import LockedTeaser from "@/components/LockedTeaser";
+import UpgradeModal from "@/components/UpgradeModal";
 import { matchesAlert } from "@/lib/alerts";
+import { api, clearLicense, getLicense, setLicense } from "@/lib/client";
 import { formatPrice, timeAgo } from "@/lib/format";
+import { FREE_MAX_DISTANCE, PLAN_LIMITS, type Plan, type UpgradeReason } from "@/lib/plan";
+import { useLocation } from "@/lib/useLocation";
 import type { AlertHit, AlertKeyword, Listing, ScrapeMeta, ScrapeResponse } from "@/lib/types";
 
 const AUTO_REFRESH_MS = 30_000;
 const FILTER_DEBOUNCE_MS = 350;
 const MAX_VISIBLE_HITS = 4;
 
+const PLATFORM_NAMES: Record<string, string> = {
+  eBay: "eBay",
+  Marketplace: "Facebook Marketplace",
+  Craigs: "Craigslist",
+};
+
 type NotificationState = NotificationPermission | "unsupported";
 
 export default function DashboardPage() {
   // Search + filters
   const [query, setQuery] = useState("");
-  const [maxDistance, setMaxDistance] = useState(500);
+  const [maxDistance, setMaxDistance] = useState(FREE_MAX_DISTANCE);
   const [minScore, setMinScore] = useState(1);
   const [hideScams, setHideScams] = useState(false);
   const [autoRefresh, setAutoRefresh] = useState(false);
@@ -38,15 +50,35 @@ export default function DashboardPage() {
   const [notificationPermission, setNotificationPermission] =
     useState<NotificationState>("unsupported");
 
+  // Location (auto-detected, user can change) and plan (free/pro)
+  const { location, detecting, detectFailed, detect, choose } = useLocation();
+  const [plan, setPlan] = useState<Plan>("free");
+  const isPro = plan === "pro";
+  const [upgradeReason, setUpgradeReason] = useState<UpgradeReason | null>(null);
+  const [nudge, setNudge] = useState(false);
+  const searchCount = useRef(0);
+
   // Refs let the stable runScrape callback read the latest values without re-subscribing effects.
-  const paramsRef = useRef({ query, maxDistance, minScore });
+  const paramsRef = useRef({
+    query,
+    maxDistance,
+    minScore,
+    originLat: location?.lat,
+    originLng: location?.lng,
+  });
   const alertsRef = useRef<AlertKeyword[]>(alerts);
   const previousRef = useRef<{ signature: string; ids: Set<string> } | null>(null);
   const requestSeq = useRef(0);
 
   useEffect(() => {
-    paramsRef.current = { query, maxDistance, minScore };
-  }, [query, maxDistance, minScore]);
+    paramsRef.current = {
+      query,
+      maxDistance,
+      minScore,
+      originLat: location?.lat,
+      originLng: location?.lng,
+    };
+  }, [query, maxDistance, minScore, location?.lat, location?.lng]);
 
   useEffect(() => {
     alertsRef.current = alerts;
@@ -59,12 +91,27 @@ export default function DashboardPage() {
     setError(null);
 
     try {
-      const { data } = await axios.post<ScrapeResponse>("/api/scrape", {
+      const { data } = await api.post<ScrapeResponse>("/api/scrape", {
         query: params.query,
         maxDistance: params.maxDistance,
         minDealScore: params.minScore,
+        originLat: params.originLat,
+        originLng: params.originLng,
       });
       if (seq !== requestSeq.current) return; // a newer request superseded this one
+
+      setPlan(data.meta.plan);
+
+      // Friendly nudge once per session, on the 3rd search, for Free users.
+      searchCount.current += 1;
+      if (
+        data.meta.plan === "free" &&
+        searchCount.current === 3 &&
+        !window.sessionStorage.getItem("dealradar:nudged")
+      ) {
+        window.sessionStorage.setItem("dealradar:nudged", "1");
+        setNudge(true);
+      }
 
       // "New" only makes sense when comparing like-for-like searches.
       const signature = JSON.stringify(params);
@@ -91,7 +138,12 @@ export default function DashboardPage() {
           price: listing.price,
           keyword: rule.keyword,
         });
-        if (typeof window !== "undefined" && "Notification" in window && Notification.permission === "granted") {
+        if (
+          data.meta.plan === "pro" &&
+          typeof window !== "undefined" &&
+          "Notification" in window &&
+          Notification.permission === "granted"
+        ) {
           new Notification(`Alert: ${rule.keyword}`, {
             body: `${listing.title} - ${formatPrice(listing.price)}`,
           });
@@ -110,27 +162,62 @@ export default function DashboardPage() {
     }
   }, []);
 
-  // Initial load + debounced re-scrape whenever a slider moves.
+  // Initial load (once the location is known) + debounced re-scrape whenever a slider or the
+  // location changes.
+  const hasLocation = location !== null;
   useEffect(() => {
+    if (!hasLocation) return;
     const timer = setTimeout(() => void runScrape(), FILTER_DEBOUNCE_MS);
     return () => clearTimeout(timer);
-  }, [maxDistance, minScore, runScrape]);
+  }, [hasLocation, location?.lat, location?.lng, maxDistance, minScore, runScrape]);
 
-  // Optional live polling.
+  // Optional live polling (Pro only).
   useEffect(() => {
-    if (!autoRefresh) return;
+    if (!autoRefresh || !isPro) return;
     const timer = setInterval(() => void runScrape(), AUTO_REFRESH_MS);
     return () => clearInterval(timer);
-  }, [autoRefresh, runScrape]);
+  }, [autoRefresh, isPro, runScrape]);
 
-  // Load saved alert rules + browser notification state.
+  // Load saved alert rules + browser notification state, and re-check a stored Pro license.
   useEffect(() => {
-    axios
+    api
       .get<{ alerts: AlertKeyword[] }>("/api/alerts")
       .then(({ data }) => setAlerts(data.alerts))
       .catch(() => setError("Could not load alert rules."));
     setNotificationPermission("Notification" in window ? Notification.permission : "unsupported");
+
+    // One-click activation from the license email: /#license=KEY (the fragment never hits servers).
+    const fragment = new URLSearchParams(window.location.hash.replace(/^#/, "")).get("license");
+    if (fragment) {
+      api
+        .post<{ valid: boolean }>("/api/pro/verify", { key: fragment })
+        .then(({ data }) => {
+          if (data.valid) {
+            setLicense(fragment);
+            setPlan("pro");
+          }
+        })
+        .catch(() => undefined)
+        .finally(() => window.history.replaceState(null, "", window.location.pathname));
+    }
+
+    const license = getLicense();
+    if (license) {
+      api
+        .post<{ valid: boolean }>("/api/pro/verify", { key: license })
+        .then(({ data }) => (data.valid ? setPlan("pro") : clearLicense()))
+        .catch(() => undefined);
+    }
   }, []);
+
+  const requirePro = useCallback((reason: UpgradeReason) => setUpgradeReason(reason), []);
+
+  const handleActivated = useCallback(() => {
+    setPlan("pro");
+    setUpgradeReason(null);
+    setNudge(false);
+    void runScrape();
+  }, [runScrape]);
 
   const requestNotifications = useCallback(() => {
     if (!("Notification" in window)) return;
@@ -139,19 +226,28 @@ export default function DashboardPage() {
 
   const createAlert = useCallback(
     async (input: { keyword: string; maxPrice: number | null; minDealScore: number }) => {
-      const { data } = await axios.post<{ alert: AlertKeyword }>("/api/alerts", input);
-      setAlerts((current) => [data.alert, ...current]);
+      try {
+        const { data } = await api.post<{ alert: AlertKeyword }>("/api/alerts", input);
+        setAlerts((current) => [data.alert, ...current]);
+      } catch (err) {
+        // 402 = plan limit reached: show the upgrade prompt instead of a generic error.
+        if (axios.isAxiosError(err) && err.response?.status === 402) {
+          setUpgradeReason("alerts");
+          return;
+        }
+        throw err;
+      }
     },
     [],
   );
 
   const toggleAlert = useCallback(async (id: string, enabled: boolean) => {
-    const { data } = await axios.patch<{ alert: AlertKeyword }>("/api/alerts", { id, enabled });
+    const { data } = await api.patch<{ alert: AlertKeyword }>("/api/alerts", { id, enabled });
     setAlerts((current) => current.map((alert) => (alert.id === id ? data.alert : alert)));
   }, []);
 
   const removeAlert = useCallback(async (id: string) => {
-    await axios.delete("/api/alerts", { params: { id } });
+    await api.delete("/api/alerts", { params: { id } });
     setAlerts((current) => current.filter((alert) => alert.id !== id));
   }, []);
 
@@ -222,15 +318,21 @@ export default function DashboardPage() {
             <span className="rounded-full bg-black/30 px-2 py-0.5 text-xs">{activeAlertCount}</span>
           </button>
 
-          <a
-            href="https://buy.stripe.com/7sYfZhba5bcVbjSd9U7bW01"
-            target="_blank"
-            rel="noopener noreferrer"
-            className="inline-flex items-center gap-2 rounded-lg bg-gradient-to-r from-orange-400 via-orange-500 to-amber-600 px-4 py-2 text-sm font-semibold text-white shadow-lg shadow-orange-500/25 transition hover:brightness-110 focus:outline-none focus-visible:ring-2 focus-visible:ring-orange-300"
-          >
-            <Sparkles className="h-4 w-4" />
-            Pro Upgrade
-          </a>
+          {isPro ? (
+            <span className="inline-flex items-center gap-2 rounded-lg border border-orange-400/50 bg-orange-500/10 px-4 py-2 text-sm font-semibold text-orange-200">
+              <Sparkles className="h-4 w-4" />
+              Pro active
+            </span>
+          ) : (
+            <button
+              type="button"
+              onClick={() => setUpgradeReason("general")}
+              className="inline-flex items-center gap-2 rounded-lg bg-gradient-to-r from-orange-400 via-orange-500 to-amber-600 px-4 py-2 text-sm font-semibold text-white shadow-lg shadow-orange-500/25 transition hover:brightness-110 focus:outline-none focus-visible:ring-2 focus-visible:ring-orange-300"
+            >
+              <Sparkles className="h-4 w-4" />
+              Go Pro
+            </button>
+          )}
         </div>
       </header>
 
@@ -248,6 +350,8 @@ export default function DashboardPage() {
           onAutoRefreshChange={setAutoRefresh}
           loading={loading}
           onRun={() => void runScrape()}
+          isPro={isPro}
+          onProRequired={requirePro}
         />
 
         {alertsOpen && (
@@ -259,15 +363,27 @@ export default function DashboardPage() {
             onCreate={createAlert}
             onToggle={toggleAlert}
             onDelete={removeAlert}
+            isPro={isPro}
+            maxAlerts={PLAN_LIMITS[plan].maxAlerts}
+            onProRequired={requirePro}
           />
         )}
       </div>
+
+      <LocationBar
+        location={location}
+        detecting={detecting}
+        detectFailed={detectFailed}
+        onDetect={detect}
+        onChoose={choose}
+      />
 
       {/* Stats strip */}
       {meta && (
         <div className="mt-6 flex flex-wrap items-center gap-x-6 gap-y-2 text-sm text-zinc-400">
           <span>
-            <strong className="text-white">{visibleListings.length}</strong> of {meta.totalScraped} listings
+            <strong className="text-white">{visibleListings.length}</strong>{" "}
+            {visibleListings.length === 1 ? "listing" : "listings"}
           </span>
           <span className="inline-flex items-center gap-1.5">
             <Flame className="h-4 w-4 text-emerald-400" />
@@ -278,7 +394,7 @@ export default function DashboardPage() {
             <strong className="text-white">{scams}</strong> flagged
           </span>
           <span className="sm:ml-auto">
-            From {meta.origin.label} &middot; scraped {timeAgo(meta.scrapedAt)} in {meta.durationMs}ms
+            Updated {timeAgo(meta.scrapedAt)}
           </span>
         </div>
       )}
@@ -292,7 +408,8 @@ export default function DashboardPage() {
             <p key={platform} className="flex items-start gap-2">
               <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" />
               <span>
-                <strong>{platform}</strong> returned no live results: {reason}
+                <strong>{PLATFORM_NAMES[platform] ?? platform}</strong> results are {reason}. Showing
+                the other sources.
               </span>
             </p>
           ))}
@@ -306,6 +423,22 @@ export default function DashboardPage() {
         >
           <AlertTriangle className="h-4 w-4 shrink-0" /> {error}
         </div>
+      )}
+
+      {meta && !isPro && meta.delayedHotCount > 0 && (
+        <button
+          type="button"
+          onClick={() => setUpgradeReason("fresh")}
+          className="mt-4 flex w-full items-center gap-2 rounded-xl border border-emerald-500/40 bg-emerald-950/30 p-3 text-left text-sm text-emerald-200 transition hover:border-emerald-400"
+        >
+          <Flame className="h-4 w-4 shrink-0" />
+          <span>
+            <strong>{meta.delayedHotCount}</strong> hot {meta.delayedHotCount === 1 ? "deal was" : "deals were"}{" "}
+            posted in the last {PLAN_LIMITS.free.freshDelayMinutes} minutes. Pro members can see{" "}
+            {meta.delayedHotCount === 1 ? "it" : "them"} right now.{" "}
+            <span className="font-semibold underline">Unlock</span>
+          </span>
+        </button>
       )}
 
       {/* Feed */}
@@ -340,7 +473,57 @@ export default function DashboardPage() {
             ))}
           </div>
         )}
+
+        {meta && !isPro && (
+          <LockedTeaser
+            lockedCount={meta.lockedCount}
+            delayedCount={meta.delayedCount}
+            delayedHotCount={meta.delayedHotCount}
+            onUpgrade={() => setUpgradeReason(meta.lockedCount > 0 ? "results" : "fresh")}
+          />
+        )}
       </main>
+
+      <UpgradeModal
+        reason={upgradeReason}
+        onClose={() => setUpgradeReason(null)}
+        onActivated={handleActivated}
+      />
+
+      {/* Friendly one-time nudge for Free users */}
+      {nudge && !isPro && (
+        <div
+          role="status"
+          className="fixed bottom-4 left-4 z-40 flex w-[calc(100%-2rem)] max-w-sm animate-slide-in items-start gap-3 rounded-xl border border-orange-500/50 bg-panel p-4 shadow-2xl"
+        >
+          <Sparkles className="mt-0.5 h-5 w-5 shrink-0 text-orange-300" />
+          <div className="min-w-0 flex-1">
+            <p className="text-sm font-bold text-white">Finding good stuff?</p>
+            <p className="mt-0.5 text-sm text-zinc-300">
+              Pro members see new listings {PLAN_LIMITS.free.freshDelayMinutes} minutes before everyone else.
+              The best deals go fast.
+            </p>
+            <button
+              type="button"
+              onClick={() => {
+                setNudge(false);
+                setUpgradeReason("fresh");
+              }}
+              className="mt-2 text-sm font-semibold text-orange-300 hover:text-orange-200"
+            >
+              See what Pro includes
+            </button>
+          </div>
+          <button
+            type="button"
+            aria-label="Dismiss"
+            onClick={() => setNudge(false)}
+            className="rounded-md p-1 text-zinc-500 hover:bg-white/5 hover:text-white"
+          >
+            <X className="h-4 w-4" />
+          </button>
+        </div>
+      )}
 
       {/* Alert toasts */}
       {hits.length > 0 && (

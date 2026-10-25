@@ -1,7 +1,8 @@
 "use client";
 
 import type { FormEvent } from "react";
-import { Gauge, Loader2, MapPin, Radar, RefreshCw, Search, ShieldOff } from "lucide-react";
+import { Gauge, Loader2, Lock, MapPin, Radar, RefreshCw, Search, ShieldOff } from "lucide-react";
+import { FREE_MAX_DISTANCE, type UpgradeReason } from "@/lib/plan";
 
 export const ANY_DISTANCE = 1500;
 
@@ -18,6 +19,8 @@ interface ControlBarProps {
   onAutoRefreshChange: (value: boolean) => void;
   loading: boolean;
   onRun: () => void;
+  isPro: boolean;
+  onProRequired: (reason: UpgradeReason) => void;
 }
 
 export default function ControlBar(props: ControlBarProps) {
@@ -34,6 +37,8 @@ export default function ControlBar(props: ControlBarProps) {
     onAutoRefreshChange,
     loading,
     onRun,
+    isPro,
+    onProRequired,
   } = props;
 
   const submit = (event: FormEvent) => {
@@ -55,10 +60,15 @@ export default function ControlBar(props: ControlBarProps) {
             type="search"
             value={query}
             onChange={(event) => onQueryChange(event.target.value)}
-            placeholder="240sx, te37, rtx 4090, coilovers..."
+            placeholder="Try 240sx, te37, rtx 4090, coilovers..."
             className="field"
             autoComplete="off"
           />
+          {!query && (
+            <span className="mt-1.5 block text-xs text-zinc-500">
+              Leave blank to browse 240sx, coilovers, turbo &amp; wheels
+            </span>
+          )}
         </label>
 
         <label className="block">
@@ -73,12 +83,21 @@ export default function ControlBar(props: ControlBarProps) {
           <input
             type="range"
             min={25}
-            max={ANY_DISTANCE}
+            max={isPro ? ANY_DISTANCE : FREE_MAX_DISTANCE}
             step={25}
-            value={maxDistance}
+            value={Math.min(maxDistance, isPro ? ANY_DISTANCE : FREE_MAX_DISTANCE)}
             onChange={(event) => onMaxDistanceChange(Number(event.target.value))}
-            className="h-10 w-full cursor-pointer"
+            className="h-8 w-full cursor-pointer"
           />
+          {!isPro && (
+            <button
+              type="button"
+              onClick={() => onProRequired("distance")}
+              className="-mt-1 inline-flex items-center gap-1 text-xs font-semibold text-orange-300 hover:text-orange-200"
+            >
+              <Lock className="h-3 w-3" /> Pro: search beyond {FREE_MAX_DISTANCE} miles
+            </button>
+          )}
         </label>
 
         <label className="block">
@@ -101,7 +120,7 @@ export default function ControlBar(props: ControlBarProps) {
 
         <button type="submit" disabled={loading} className="btn-primary h-[42px] w-full lg:w-auto">
           {loading ? <Loader2 className="h-4 w-4 animate-spin" /> : <Radar className="h-4 w-4" />}
-          {loading ? "Scraping..." : "Run Live Scrape"}
+          {loading ? "Searching..." : "Search"}
         </button>
       </div>
 
@@ -109,12 +128,23 @@ export default function ControlBar(props: ControlBarProps) {
         <label className="inline-flex cursor-pointer items-center gap-2">
           <input
             type="checkbox"
-            checked={autoRefresh}
-            onChange={(event) => onAutoRefreshChange(event.target.checked)}
+            checked={autoRefresh && isPro}
+            onChange={(event) => {
+              if (!isPro) {
+                onProRequired("live");
+                return;
+              }
+              onAutoRefreshChange(event.target.checked);
+            }}
             className="h-4 w-4 rounded border-line bg-raised"
           />
-          <RefreshCw className={`h-3.5 w-3.5 ${autoRefresh ? "animate-spin text-brand" : ""}`} />
-          Auto-scrape every 30s
+          <RefreshCw className={`h-3.5 w-3.5 ${autoRefresh && isPro ? "animate-spin text-brand" : ""}`} />
+          Auto-refresh every 30s
+          {!isPro && (
+            <span className="inline-flex items-center gap-1 rounded bg-orange-500/15 px-1.5 py-0.5 text-[10px] font-bold uppercase text-orange-300">
+              <Lock className="h-3 w-3" /> Pro
+            </span>
+          )}
         </label>
 
         <label className="inline-flex cursor-pointer items-center gap-2">

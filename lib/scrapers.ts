@@ -109,7 +109,11 @@ const CRAIGSLIST_MAX_RESULTS = 12;
  * first photo (og:image), coordinates, description and posted time. Every listing links to
  * the individual post.
  */
-export async function scrapeCraigslist(query: string, origin: Origin): Promise<ListingDraft[]> {
+export async function scrapeCraigslist(
+  query: string,
+  origin: Origin,
+  limit: number = CRAIGSLIST_MAX_RESULTS,
+): Promise<ListingDraft[]> {
   const site = nearestCraigslistSite(origin);
   const searchUrl = `https://${site.site}.craigslist.org/search/sss?query=${encodeURIComponent(query)}`;
 
@@ -119,7 +123,7 @@ export async function scrapeCraigslist(query: string, origin: Origin): Promise<L
 
   const rows: { title: string; price: number; url: string; area: string }[] = [];
   $("li.cl-static-search-result").each((_, element) => {
-    if (rows.length >= CRAIGSLIST_MAX_RESULTS) return;
+    if (rows.length >= limit) return;
     const row = $(element);
     const url = row.find("a").first().attr("href");
     const title = cleanText(row.attr("title") ?? row.find(".title").first().text());
@@ -230,11 +234,11 @@ async function getEbayToken(): Promise<string> {
  * EBAY_CLIENT_SECRET (free at developer.ebay.com). Each listing links to its item page
  * (itemWebUrl) and uses the item's primary photo.
  */
-export async function scrapeEbay(query: string): Promise<ListingDraft[]> {
+export async function scrapeEbay(query: string, limit = 20): Promise<ListingDraft[]> {
   const token = await getEbayToken();
   const url =
     "https://api.ebay.com/buy/browse/v1/item_summary/search" +
-    `?q=${encodeURIComponent(query)}&limit=20&sort=newlyListed&filter=buyingOptions%3A%7BFIXED_PRICE%7D`;
+    `?q=${encodeURIComponent(query)}&limit=${limit}&sort=newlyListed&filter=buyingOptions%3A%7BFIXED_PRICE%7D`;
   const response = await fetchWithTimeout(url, {
     headers: { Authorization: `Bearer ${token}`, "X-EBAY-C-MARKETPLACE-ID": "EBAY_US" },
   });

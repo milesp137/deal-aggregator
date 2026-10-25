@@ -16,6 +16,8 @@ import {
 } from "@/lib/mockSources";
 import { DEFAULT_ORIGIN, lookupMarket } from "@/lib/market";
 import { scrapeFacebookMarketplace } from "@/lib/facebook";
+import type { Plan } from "@/lib/plan";
+import { limitsFor, planForRequest } from "@/lib/pro";
 import {
   isEbayConfigured,
   scrapeCraigslist,
@@ -32,6 +34,27 @@ const sleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve,
 async function fetchSource<T>(produce: () => T): Promise<T> {
   await sleep(250 + Math.random() * 450);
   return produce();
+}
+
+/** Topics browsed when the search box is left blank. */
+const DEFAULT_KEYWORDS = ["240sx", "coilovers", "turbo", "wheels"];
+const DEFAULT_PER_KEYWORD_LIMIT = 6;
+
+/**
+ * Runs one scrape per keyword in parallel and merges the results. Individual keyword failures
+ * are tolerated; it only throws when every keyword fails.
+ */
+async function scrapeKeywords(
+  keywords: string[],
+  run: (keyword: string) => Promise<ListingDraft[]>,
+): Promise<ListingDraft[]> {
+  const results = await Promise.allSettled(keywords.map((keyword) => run(keyword)));
+  const fulfilled = results.flatMap((result) => (result.status === "fulfilled" ? [result.value] : []));
+  if (fulfilled.length === 0) {
+    const failure = results.find((result) => result.status === "rejected") as PromiseRejectedResult;
+    throw failure.reason;
+  }
+  return fulfilled.flat();
 }
 
 interface SourceResult {
@@ -340,29 +363,39 @@ function parseRequest(input: Record<string, unknown>): Required<ScrapeRequest> {
   };
 }
 
-async function runScrape(request: Required<ScrapeRequest>): Promise<ScrapeResponse> {
+async function runScrape(request: Required<ScrapeRequest>, plan: Plan): Promise<ScrapeResponse> {
   const startedAt = Date.now();
   const now = startedAt;
 
   const origin = { lat: request.originLat, lng: request.originLng };
 
+  // A blank search browses a few popular project-car topics instead of an unfiltered feed.
+  const keywords = request.query ? [request.query] : DEFAULT_KEYWORDS;
+  const perKeywordLimit = request.query ? undefined : DEFAULT_PER_KEYWORD_LIMIT;
+
   const [ebay, marketplace, craigslist] = await Promise.all([
     liveOrSample(
       "eBay",
-      isEbayConfigured() ? () => scrapeEbay(request.query || "car parts") : null,
+      isEbayConfigured()
+        ? () => scrapeKeywords(keywords, (keyword) => scrapeEbay(keyword, perKeywordLimit))
+        : null,
       "eBay API keys not configured (set EBAY_CLIENT_ID and EBAY_CLIENT_SECRET)",
       async () => normalizeEbay(await fetchSource(() => getEbayPayload(now)), request.query),
     ),
     liveOrSample(
       "Marketplace",
-      () => scrapeFacebookMarketplace(request.query, origin),
+      () =>
+        scrapeKeywords(keywords, (keyword) =>
+          scrapeFacebookMarketplace(keyword, origin, perKeywordLimit),
+        ),
       "Facebook Marketplace scraper unavailable",
       async () =>
         normalizeMarketplace(await fetchSource(() => getMarketplacePayload(now)), request.query),
     ),
     liveOrSample(
       "Craigs",
-      () => scrapeCraigslist(request.query, origin),
+      () =>
+        scrapeKeywords(keywords, (keyword) => scrapeCraigslist(keyword, origin, perKeywordLimit)),
       "Craigslist scraper unavailable",
       async () => parseCraigslist(await fetchSource(() => getCraigslistHtml(now)), request.query),
     ),
@@ -374,10 +407,16 @@ async function runScrape(request: Required<ScrapeRequest>): Promise<ScrapeRespon
     Craigs: craigslist.live,
   };
 
+  // Detailed reasons stay in the server logs and dev mode; visitors only see a short message.
   const errors: Partial<Record<SourcePlatform, string>> = {};
-  if (ebay.error) errors.eBay = ebay.error;
-  if (marketplace.error) errors.Marketplace = marketplace.error;
-  if (craigslist.error) errors.Craigs = craigslist.error;
+  const report = (platform: SourcePlatform, detail?: string) => {
+    if (!detail) return;
+    console.warn(`[scrape] ${platform} unavailable: ${detail}`);
+    errors[platform] = process.env.NODE_ENV === "production" ? "temporarily unavailable" : detail;
+  };
+  report("eBay", ebay.error);
+  report("Marketplace", marketplace.error);
+  report("Craigs", craigslist.error);
 
   const seen = new Set<string>();
   const drafts = [...ebay.drafts, ...marketplace.drafts, ...craigslist.drafts].filter((draft) =>
@@ -427,12 +466,16 @@ async function runScrape(request: Required<ScrapeRequest>): Promise<ScrapeRespon
     } as Listing;
   });
 
-  const listings = enriched
+  // Plan limits are enforced here, server-side, so they can't be bypassed from the browser.
+  const limits = limitsFor(plan);
+  const maxDistance = Math.min(request.maxDistance, limits.maxDistance);
+
+  const matching = enriched
     .filter(
       (listing) =>
-        (request.maxDistance >= ANY_DISTANCE ||
+        (maxDistance >= ANY_DISTANCE ||
           listing.distanceMiles === null ||
-          listing.distanceMiles <= request.maxDistance) &&
+          listing.distanceMiles <= maxDistance) &&
         listing.dealScore >= request.minDealScore,
     )
     .sort(
@@ -441,9 +484,22 @@ async function runScrape(request: Required<ScrapeRequest>): Promise<ScrapeRespon
         new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime(),
     );
 
+  // Free plan: hide listings posted in the last few minutes (Pro sees them instantly).
+  const freshCutoff = now - limits.freshDelayMinutes * 60_000;
+  const isFresh = (listing: Listing) =>
+    limits.freshDelayMinutes > 0 && new Date(listing.timestamp).getTime() > freshCutoff;
+  const delayed = matching.filter((listing) => isFresh(listing) && !listing.isScam);
+  const visible = matching.filter((listing) => !isFresh(listing) || listing.isScam);
+
+  const listings = visible.slice(0, limits.maxResults);
+
   const meta: ScrapeMeta = {
     totalScraped: drafts.length,
     returned: listings.length,
+    plan,
+    lockedCount: visible.length - listings.length,
+    delayedCount: delayed.length,
+    delayedHotCount: delayed.filter((listing) => listing.dealScore >= 7).length,
     scamCount: listings.filter((listing) => listing.isScam).length,
     durationMs: Date.now() - startedAt,
     scrapedAt: new Date().toISOString(),
@@ -470,12 +526,15 @@ export async function POST(req: Request) {
   } catch {
     return NextResponse.json({ error: "Request body must be valid JSON." }, { status: 400 });
   }
-  const result = await runScrape(parseRequest(body as Record<string, unknown>));
+  const result = await runScrape(
+    parseRequest(body as Record<string, unknown>),
+    await planForRequest(req),
+  );
   return NextResponse.json(result, { headers: { "Cache-Control": "no-store" } });
 }
 
 export async function GET(req: Request) {
   const params = Object.fromEntries(new URL(req.url).searchParams.entries());
-  const result = await runScrape(parseRequest(params));
+  const result = await runScrape(parseRequest(params), await planForRequest(req));
   return NextResponse.json(result, { headers: { "Cache-Control": "no-store" } });
 }
