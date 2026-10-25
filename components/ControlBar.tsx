@@ -98,7 +98,7 @@ export default function ControlBar(props: ControlBarProps) {
   return (
     <form
       onSubmit={submit}
-      className="rounded-2xl border border-line bg-panel/90 p-4 shadow-xl backdrop-blur sm:p-5"
+      className="relative z-20 rounded-2xl border border-line bg-panel/90 p-4 shadow-xl backdrop-blur sm:p-5"
     >
       <div className="grid gap-4 lg:grid-cols-[minmax(0,1.6fr)_minmax(0,1fr)_minmax(0,1fr)_auto] lg:items-end">
         <label className="block">
