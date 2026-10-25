@@ -19,7 +19,7 @@ import { DEFAULT_ORIGIN, lookupMarket } from "@/lib/market";
 import { scrapeFacebookMarketplace } from "@/lib/facebook";
 import type { Plan } from "@/lib/plan";
 import { limitsFor, planForRequest } from "@/lib/pro";
-import { looksOffTarget, MIN_ON_TARGET_TO_HIDE } from "@/lib/relevance";
+import { classifyTitle, MIN_ON_TARGET_TO_HIDE } from "@/lib/relevance";
 import {
   isEbayConfigured,
   scrapeCraigslist,
@@ -465,17 +465,23 @@ async function runScrape(request: Required<ScrapeRequest>, plan: Plan): Promise<
 
   // Broad searches ("psp") also match games, cases and chargers. Rank those last, and hide them
   // entirely once there are enough real results. Blank searches are left alone.
-  const offTargetIds = new Set<string>();
+  // "made-for" titles ("coilovers for 240sx") are ranked after the item itself but never hidden.
+  const junkIds = new Set<string>();
+  const madeForIds = new Set<string>();
   if (request.query) {
     for (const draft of matched) {
-      if (looksOffTarget(draft.title, request.query)) offTargetIds.add(draft.id);
+      const kind = classifyTitle(draft.title, request.query);
+      if (kind === "junk") junkIds.add(draft.id);
+      else if (kind === "made-for") madeForIds.add(draft.id);
     }
   }
-  const onTargetCount = matched.length - offTargetIds.size;
+  const onTargetCount = matched.length - junkIds.size - madeForIds.size;
   const refined =
     onTargetCount >= MIN_ON_TARGET_TO_HIDE
-      ? matched.filter((draft) => !offTargetIds.has(draft.id))
+      ? matched.filter((draft) => !junkIds.has(draft.id))
       : matched;
+  // 0 = the item itself, 1 = made for it, 2 = junk.
+  const relevanceTier = (id: string) => (junkIds.has(id) ? 2 : madeForIds.has(id) ? 1 : 0);
 
   const enriched: Listing[] = refined.map((draft) => {
     const market = lookupMarket(draft.title);
@@ -521,7 +527,7 @@ async function runScrape(request: Required<ScrapeRequest>, plan: Plan): Promise<
     )
     .sort(
       (a, b) =>
-        Number(offTargetIds.has(a.id)) - Number(offTargetIds.has(b.id)) ||
+        relevanceTier(a.id) - relevanceTier(b.id) ||
         b.dealScore - a.dealScore ||
         new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime(),
     );

@@ -65,16 +65,26 @@ function withoutQueryTerms(title: string, terms: string[]): string {
   return text;
 }
 
-/** True when the title looks like an accessory, software or broken unit instead of the item itself. */
-export function looksOffTarget(title: string, query: string): boolean {
+/**
+ * How a listing relates to what was searched for:
+ *  - "junk":     accessory, software or a broken unit. Ranked last, and hidden when there are
+ *                plenty of better results.
+ *  - "made-for": "<something> FOR <the search>" (a case for a PSP, coilovers for a 240sx). Ranked
+ *                after the item itself but never hidden, since these can be exactly what the
+ *                shopper wants (parts).
+ *  - null:       looks like the item itself.
+ */
+export type Relevance = "junk" | "made-for" | null;
+
+export function classifyTitle(title: string, query: string): Relevance {
   const terms = termsOf(query);
-  if (terms.length === 0) return false;
+  if (terms.length === 0) return null;
 
   // Compare only the words the shopper did NOT type.
   const rest = withoutQueryTerms(title, terms);
 
-  if (CONDITION.test(rest)) return true;
-  if (ACCESSORY.test(rest) && !PROTECTED.test(title)) return true;
+  if (CONDITION.test(rest)) return "junk";
+  if (ACCESSORY.test(rest) && !PROTECTED.test(title)) return "junk";
 
   if (!terms.includes("for")) {
     const lower = title.toLowerCase();
@@ -84,11 +94,11 @@ export function looksOffTarget(title: string, query: string): boolean {
         ...terms.map((term) => lower.indexOf(term)).filter((index) => index >= 0),
         Number.POSITIVE_INFINITY,
       );
-      if (forMatch.index < firstTerm) return true;
+      if (forMatch.index < firstTerm) return "made-for";
     }
   }
-  return false;
+  return null;
 }
 
-/** Below this many on-target results, off-target ones stay visible (just ranked last). */
+/** Junk is only hidden when at least this many better results exist; otherwise it stays, last. */
 export const MIN_ON_TARGET_TO_HIDE = 6;

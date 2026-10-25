@@ -88,7 +88,7 @@ export default function ControlBar(props: ControlBarProps) {
             <span className="mt-1.5 flex items-start gap-1 text-xs text-zinc-500">
               <Lightbulb className="mt-0.5 h-3 w-3 shrink-0 text-amber-400" />
               <span>
-                <strong className="font-semibold text-zinc-300">Tip:</strong> be precise about what
+                <strong className="font-semibold text-zinc-300">Tip:</strong> Be precise about what
                 you&apos;re looking up!
                 {query.trim().split(/\s+/).length === 1 &&
                   ` A broad search like “${query.trim()}” also matches games, cases and parts. Add what you want, like “${query.trim()} console”.`}
