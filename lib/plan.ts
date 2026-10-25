@@ -38,7 +38,7 @@ export const PLAN_LIMITS: Record<Plan, PlanLimits> = {
 
 export const FREE_MAX_DISTANCE = PLAN_LIMITS.free.maxDistance;
 
-export const UPGRADE_URL = "https://buy.stripe.com/7sYfZhba5bcVbjSd9U7bW01";
+export const UPGRADE_URL = "https://buy.stripe.com/4gMdR91zv94NcnWfi27bW02";
 
 export type UpgradeReason =
   | "general"
