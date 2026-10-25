@@ -63,6 +63,8 @@ export interface ScrapeMeta {
   sources: Record<SourcePlatform, number>;
   /** Whether each platform returned real scraped data (false = sample fallback). */
   live: Record<SourcePlatform, boolean>;
+  /** Reason a platform returned no live data (blocked, missing API keys, timeout). */
+  errors: Partial<Record<SourcePlatform, string>>;
 }
 
 export interface ScrapeResponse {

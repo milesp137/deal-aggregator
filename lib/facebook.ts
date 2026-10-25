@@ -1,6 +1,7 @@
 import https from "node:https";
 import zlib from "node:zlib";
 import * as cheerio from "cheerio";
+import { HttpsProxyAgent } from "https-proxy-agent";
 import { placeholderImage } from "./placeholder";
 import { MIN_REAL_PRICE, titleMatchesQuery, type ListingDraft, type Origin } from "./scrapers";
 
@@ -79,7 +80,13 @@ function requestOnce(
     const cookieHeader = [...cookies].map(([name, value]) => `${name}=${value}`).join("; ");
     const request = https.get(
       url,
-      { headers: { ...NAV_HEADERS, ...(cookieHeader ? { Cookie: cookieHeader } : {}) } },
+      {
+        headers: { ...NAV_HEADERS, ...(cookieHeader ? { Cookie: cookieHeader } : {}) },
+        // Optional: route through a (residential) proxy, e.g. http://user:pass@host:port
+        ...(process.env.SCRAPER_PROXY_URL
+          ? { agent: new HttpsProxyAgent(process.env.SCRAPER_PROXY_URL) }
+          : {}),
+      },
       (response) => {
         for (const raw of response.headers["set-cookie"] ?? []) {
           const [pair] = raw.split(";");
@@ -160,11 +167,27 @@ function collectListings(node: unknown, found: Map<string, FbListing>, depth = 0
   for (const value of Object.values(record)) collectListings(value, found, depth + 1);
 }
 
+// Short in-memory cache (per server instance) so auto-refresh and repeat searches don't hit
+// Facebook every time: fewer blocks, and less proxy bandwidth if you use one.
+const CACHE_TTL_MS = 5 * 60_000;
+const cache = new Map<string, { at: number; drafts: ListingDraft[] }>();
+
 export async function scrapeFacebookMarketplace(
   query: string,
   origin: Origin,
 ): Promise<ListingDraft[]> {
   const city = nearestCity(origin);
+  const cacheKey = `${city.slug}|${query.toLowerCase()}`;
+  const cached = cache.get(cacheKey);
+  if (cached && Date.now() - cached.at < CACHE_TTL_MS) return cached.drafts;
+
+  const drafts = await scrapeUncached(query, city.slug);
+  cache.set(cacheKey, { at: Date.now(), drafts });
+  return drafts;
+}
+
+async function scrapeUncached(query: string, slug: string): Promise<ListingDraft[]> {
+  const city = { slug };
   const url = query
     ? `https://www.facebook.com/marketplace/${city.slug}/search/?query=${encodeURIComponent(query)}`
     : `https://www.facebook.com/marketplace/${city.slug}/`;
@@ -184,7 +207,13 @@ export async function scrapeFacebookMarketplace(
   });
 
   if (found.size === 0) {
-    throw new Error("No Marketplace listings found in page (blocked or layout changed)");
+    const title = $("title").first().text().trim().slice(0, 60) || "none";
+    const loginWall = /log in|login|checkpoint/i.test(title) || html.includes('id="login_form"');
+    throw new Error(
+      `No Marketplace listings in page (${loginWall ? "login wall shown" : "no listing data"}; ` +
+        `title "${title}", ${html.length} bytes, ${process.env.SCRAPER_PROXY_URL ? "via proxy" : "no proxy"}). ` +
+        "Facebook likely blocks this server's IP.",
+    );
   }
 
   const drafts: ListingDraft[] = [];

@@ -37,26 +37,35 @@ async function fetchSource<T>(produce: () => T): Promise<T> {
 interface SourceResult {
   drafts: ListingDraft[];
   live: boolean;
+  /** Why the live scrape produced nothing (blocked, missing keys, timeout...). */
+  error?: string;
 }
 
+/** Sample listings are fake. They only appear when explicitly enabled with USE_SAMPLE_DATA=1. */
+const SAMPLE_DATA_ENABLED = process.env.USE_SAMPLE_DATA === "1";
+
 /**
- * Runs the live scraper when one is available. Falls back to built-in sample data only when
- * the live scraper is unavailable or errors (blocked IP, missing API keys, timeout). A live
- * scrape that succeeds with zero results stays empty rather than showing fake listings.
+ * Runs the live scraper. If it is unavailable or throws (blocked IP, missing API keys,
+ * timeout), the source returns NO listings and reports the reason, so the UI can show it
+ * instead of silently padding the feed with fake data. Set USE_SAMPLE_DATA=1 to fall back to
+ * the built-in samples (flagged with isSample) for demos.
  */
 async function liveOrSample(
   platform: SourcePlatform,
   live: (() => Promise<ListingDraft[]>) | null,
+  unavailableReason: string,
   sample: () => Promise<ListingDraft[]>,
 ): Promise<SourceResult> {
+  let error = unavailableReason;
   if (live) {
     try {
       return { drafts: await live(), live: true };
-    } catch (error) {
-      console.warn(`[scrape] ${platform} live scrape failed, using sample data:`, error);
+    } catch (caught) {
+      error = caught instanceof Error ? caught.message : String(caught);
+      console.warn(`[scrape] ${platform} live scrape failed:`, caught);
     }
   }
-  return { drafts: await sample(), live: false };
+  return { drafts: SAMPLE_DATA_ENABLED ? await sample() : [], live: false, error };
 }
 
 function cleanText(value: string): string {
@@ -341,17 +350,20 @@ async function runScrape(request: Required<ScrapeRequest>): Promise<ScrapeRespon
     liveOrSample(
       "eBay",
       isEbayConfigured() ? () => scrapeEbay(request.query || "car parts") : null,
+      "eBay API keys not configured (set EBAY_CLIENT_ID and EBAY_CLIENT_SECRET)",
       async () => normalizeEbay(await fetchSource(() => getEbayPayload(now)), request.query),
     ),
     liveOrSample(
       "Marketplace",
       () => scrapeFacebookMarketplace(request.query, origin),
+      "Facebook Marketplace scraper unavailable",
       async () =>
         normalizeMarketplace(await fetchSource(() => getMarketplacePayload(now)), request.query),
     ),
     liveOrSample(
       "Craigs",
       () => scrapeCraigslist(request.query, origin),
+      "Craigslist scraper unavailable",
       async () => parseCraigslist(await fetchSource(() => getCraigslistHtml(now)), request.query),
     ),
   ]);
@@ -361,6 +373,11 @@ async function runScrape(request: Required<ScrapeRequest>): Promise<ScrapeRespon
     Marketplace: marketplace.live,
     Craigs: craigslist.live,
   };
+
+  const errors: Partial<Record<SourcePlatform, string>> = {};
+  if (ebay.error) errors.eBay = ebay.error;
+  if (marketplace.error) errors.Marketplace = marketplace.error;
+  if (craigslist.error) errors.Craigs = craigslist.error;
 
   const seen = new Set<string>();
   const drafts = [...ebay.drafts, ...marketplace.drafts, ...craigslist.drafts].filter((draft) =>
@@ -440,6 +457,7 @@ async function runScrape(request: Required<ScrapeRequest>): Promise<ScrapeRespon
     },
     sources,
     live,
+    errors,
   };
 
   return { listings, meta };

@@ -283,6 +283,22 @@ export default function DashboardPage() {
         </div>
       )}
 
+      {meta && Object.keys(meta.errors ?? {}).length > 0 && (
+        <div
+          role="status"
+          className="mt-4 space-y-1 rounded-xl border border-yellow-500/50 bg-yellow-950/40 p-3 text-sm text-yellow-200"
+        >
+          {Object.entries(meta.errors).map(([platform, reason]) => (
+            <p key={platform} className="flex items-start gap-2">
+              <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" />
+              <span>
+                <strong>{platform}</strong> returned no live results: {reason}
+              </span>
+            </p>
+          ))}
+        </div>
+      )}
+
       {error && (
         <div
           role="alert"
