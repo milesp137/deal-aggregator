@@ -115,7 +115,7 @@ export default function ControlBar(props: ControlBarProps) {
           />
           {!query.trim() ? (
             <span className="mt-1.5 block text-xs text-zinc-500">
-              Leave blank to browse 240sx, coilovers, turbo &amp; wheels
+              Leave blank to browse a category below, or search for something specific
             </span>
           ) : (
             <span className="mt-1.5 flex items-start gap-1 text-xs text-zinc-500">

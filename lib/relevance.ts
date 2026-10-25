@@ -41,11 +41,51 @@ const ACCESSORY_TERMS = [
   "replacement",
 ];
 
+/**
+ * Things that carry a product's name without being the product: video games, books, records,
+ * clothing and toys ("Guitar Hero III" disc, "Encyclopedia of Guitars", a Hot Wheels car) plus
+ * small parts and accessories for instruments. Always junk, even when the title says "system".
+ */
+const MEDIA_AND_MERCH_TERMS = [
+  "disc only",
+  "dvds?",
+  "blu-?rays?",
+  "albums?",
+  "encyclopedia",
+  "paperback",
+  "hardcover",
+  "magazines?",
+  "posters?",
+  "sheet music",
+  "lessons?",
+  "t-?shirts?",
+  "hoodies?",
+  "costumes?",
+  "toys?",
+  "lego",
+  "funko",
+  "ornaments?",
+  "keychains?",
+  "patches",
+  "hot wheels",
+  "diecast",
+  "die-cast",
+  // instrument bits (plural only: "6 string guitar" and "pick up only" are not junk)
+  "(?<!\\d[ -])strings",
+  "picks",
+  "capos?",
+  "saddles?",
+  "tuning pegs?",
+  "hangers?",
+];
+
 /** Condition problems: unwanted for deal hunting even when the title says "console". */
 const CONDITION_TERMS = ["for parts", "parts only", "not working", "broken", "cracked screen"];
 
 const ACCESSORY = new RegExp(`\\b(?:${ACCESSORY_TERMS.join("|")})\\b`, "i");
 const CONDITION = new RegExp(`\\b(?:${CONDITION_TERMS.join("|")})\\b`, "i");
+const WITH_EXTRAS = /\bwith\b|\bw\/|\bincludes?\b|\bincluding\b|\bplus\b/i;
+const MEDIA_AND_MERCH = new RegExp(`\\b(?:${MEDIA_AND_MERCH_TERMS.join("|")})\\b`, "i");
 const PROTECTED = /\b(?:console|system|handheld)\b/i;
 /** "Screen protector FOR psp": the thing being searched is only what the item is made for. */
 const FOR_WORD = /\bfor\b(?!\s+(?:sale|trade|parts|repair|only))/i;
@@ -84,7 +124,12 @@ export function classifyTitle(title: string, query: string): Relevance {
   const rest = withoutQueryTerms(title, terms);
 
   if (CONDITION.test(rest)) return "junk";
-  if (ACCESSORY.test(rest) && !PROTECTED.test(title)) return "junk";
+
+  // Extras mentioned after "with" ("guitar with case and strap", "PSP with 10 games") are bonuses
+  // that come WITH the item, not what the listing is; only the part before them counts.
+  const main = rest.split(WITH_EXTRAS)[0];
+  if (MEDIA_AND_MERCH.test(main)) return "junk";
+  if (ACCESSORY.test(main) && !PROTECTED.test(title)) return "junk";
 
   if (!terms.includes("for")) {
     const lower = title.toLowerCase();

@@ -113,9 +113,17 @@ export interface ScrapeRequest {
   country?: string;
   originLat?: number;
   originLng?: number;
+  /** Which home-page category to browse when `query` is blank (see lib/categories.ts). */
+  category?: string;
 }
 
 export interface ScrapeMeta {
+  /** The search these results are for ("" while browsing a category). */
+  query: string;
+  /** Category browsed when the search was blank. */
+  category: string;
+  /** Ways to narrow a broad search, built from the results (empty for blank or specific searches). */
+  suggestions: { label: string; query: string; count: number }[];
   /** Listings gathered from all sources before any filtering. */
   totalScraped: number;
   returned: number;

@@ -21,6 +21,8 @@ import {
 import { DEFAULT_ORIGIN, lookupMarket } from "@/lib/market";
 import { scrapeFacebookMarketplace } from "@/lib/facebook";
 import { scrapeBringATrailer, scrapeReverb, scrapeShopGoodwill } from "@/lib/moreSources";
+import { categoryById, DEFAULT_CATEGORY, isCategoryId } from "@/lib/categories";
+import { suggestRefinements } from "@/lib/refine";
 import type { Plan } from "@/lib/plan";
 import { limitsFor, planForRequest } from "@/lib/pro";
 import { isCountryCode } from "@/lib/countries";
@@ -46,8 +48,6 @@ async function fetchSource<T>(produce: () => T): Promise<T> {
   return produce();
 }
 
-/** Topics browsed when the search box is left blank. */
-const DEFAULT_KEYWORDS = ["240sx", "coilovers", "turbo", "wheels"];
 const DEFAULT_PER_KEYWORD_LIMIT = 6;
 /** Typed searches fetch extra eBay results so the relevance filter has plenty to choose from. */
 const EBAY_SEARCH_LIMIT = 50;
@@ -392,6 +392,7 @@ function parseRequest(input: Record<string, unknown>): Required<ScrapeRequest> {
     country: isCountryCode(input.country) ? input.country : "",
     originLat: clamp(toNumber(input.originLat, DEFAULT_ORIGIN.lat), -90, 90),
     originLng: clamp(toNumber(input.originLng, DEFAULT_ORIGIN.lng), -180, 180),
+    category: isCategoryId(input.category) ? input.category : DEFAULT_CATEGORY.id,
   };
 }
 
@@ -442,20 +443,25 @@ async function runScrape(request: Required<ScrapeRequest>, plan: Plan): Promise<
 
   const origin = { lat: request.originLat, lng: request.originLng };
 
-  // A blank search browses a few popular project-car topics instead of an unfiltered feed.
-  const keywords = request.query ? [request.query] : DEFAULT_KEYWORDS;
+  // A blank search browses the chosen category (a few specific searches) instead of an
+  // unfiltered feed, on the sites that carry that kind of thing.
+  const category = categoryById(request.category);
+  const keywords = request.query ? [request.query] : category.keywords;
   const perKeywordLimit = request.query ? undefined : DEFAULT_PER_KEYWORD_LIMIT;
 
   // Sources the user switched off are never contacted (faster, and saves proxy bandwidth).
-  // Facebook Marketplace and Craigslist only cover the US, so a non-US country means eBay only.
+  // The other sites only cover the US, so a non-US country means eBay only. While browsing a
+  // category only that category's sites run; a typed search uses every site that's switched on.
   const usOnlySitesAllowed = request.country === "" || request.country === "US";
+  // If the visitor switched off every site this category uses, honor their choice instead.
+  const browseSites = category.sources.some((site) => request.sources.includes(site))
+    ? category.sources
+    : request.sources;
   const wants = (platform: SourcePlatform) =>
-    request.sources.includes(platform) && (platform === "eBay" || usOnlySitesAllowed);
+    request.sources.includes(platform) &&
+    (platform === "eBay" || usOnlySitesAllowed) &&
+    (request.query !== "" || browseSites.includes(platform));
   const skipped = async (): Promise<SourceResult> => ({ drafts: [], live: false });
-
-  // ShopGoodwill and Reverb only make sense for a typed search: a blank browse of "turbo" and
-  // "wheels" would fill the feed with kitchen appliances and guitar pedals.
-  const hasQuery = request.query !== "";
   const noSample = async () => [] as ListingDraft[];
 
   const [ebay, marketplace, craigslist, shopgoodwill, bat, reverb] = await Promise.all([
@@ -496,7 +502,7 @@ async function runScrape(request: Required<ScrapeRequest>, plan: Plan): Promise<
           async () =>
             parseCraigslist(await fetchSource(() => getCraigslistHtml(now)), request.query),
         ),
-    !wants("ShopGoodwill") || !hasQuery
+    !wants("ShopGoodwill")
       ? skipped()
       : liveOrSample(
           "ShopGoodwill",
@@ -512,7 +518,7 @@ async function runScrape(request: Required<ScrapeRequest>, plan: Plan): Promise<
           "Bring a Trailer scraper unavailable",
           noSample,
         ),
-    !wants("Reverb") || !hasQuery
+    !wants("Reverb")
       ? skipped()
       : liveOrSample(
           "Reverb",
@@ -578,14 +584,21 @@ async function runScrape(request: Required<ScrapeRequest>, plan: Plan): Promise<
   // Broad searches ("psp") also match games, cases and chargers. Rank those last, and hide them
   // entirely once there are enough real results. Blank searches are left alone.
   // "made-for" titles ("coilovers for 240sx") are ranked after the item itself but never hidden.
+  // A blank search browses several topics, so each listing is judged against the topic it matched
+  // ("guitar pedal" hides cables and cases there too). "Made for" is only demoted on typed searches:
+  // browsing "coilovers" must not bury every "coilovers for <car>" listing.
+  const groupOf = (draft: ListingDraft): string =>
+    request.query
+      ? "query"
+      : (keywords.find((keyword) => titleMatchesQuery(draft.title, keyword)) ?? "other");
   const junkIds = new Set<string>();
   const madeForIds = new Set<string>();
-  if (request.query) {
-    for (const draft of matched) {
-      const kind = classifyTitle(draft.title, request.query);
-      if (kind === "junk") junkIds.add(draft.id);
-      else if (kind === "made-for") madeForIds.add(draft.id);
-    }
+  for (const draft of matched) {
+    const topic = request.query || groupOf(draft);
+    if (topic === "other") continue;
+    const kind = classifyTitle(draft.title, topic);
+    if (kind === "junk") junkIds.add(draft.id);
+    else if (kind === "made-for" && (request.query || category.demoteMadeFor)) madeForIds.add(draft.id);
   }
   const onTargetCount = matched.length - junkIds.size - madeForIds.size;
   const refined =
@@ -598,10 +611,6 @@ async function runScrape(request: Required<ScrapeRequest>, plan: Plan): Promise<
   // Price reference: what comparable listings in THIS search cost right now. A blank search mixes
   // several topics, so those are compared within their own topic. The market table is the
   // fallback when a search has too few results to compare.
-  const groupOf = (draft: ListingDraft): string =>
-    request.query
-      ? "query"
-      : (DEFAULT_KEYWORDS.find((keyword) => titleMatchesQuery(draft.title, keyword)) ?? "other");
   const peerPrices = new Map<string, number[]>();
   for (const draft of refined) {
     // Auction prices are current bids, not what things sell for, so they never set the benchmark.
@@ -737,7 +746,18 @@ async function runScrape(request: Required<ScrapeRequest>, plan: Plan): Promise<
 
   const listings = visible.slice(0, limits.maxResults);
 
+  // Ways to narrow a broad search, learned from the titles of the listings that fit it.
+  const suggestions = request.query
+    ? suggestRefinements(
+        matching.filter((listing) => relevanceTier(listing.id) === 0 && !listing.isScam).map((l) => l.title),
+        request.query,
+      )
+    : [];
+
   const meta: ScrapeMeta = {
+    query: request.query,
+    category: category.id,
+    suggestions,
     totalScraped: drafts.length,
     returned: listings.length,
     plan,

@@ -28,6 +28,8 @@ import { api, clearLicense, getLicense, setLicense } from "@/lib/client";
 import { formatPrice, timeAgo } from "@/lib/format";
 import { BILLING_PORTAL_URL, FREE_MAX_DISTANCE, PLAN_LIMITS, SUPPORT_EMAIL, type Plan, type UpgradeReason } from "@/lib/plan";
 import { isCountryCode } from "@/lib/countries";
+import { DEFAULT_CATEGORY, isCategoryId } from "@/lib/categories";
+import BrowseBar from "@/components/BrowseBar";
 import { useLocation } from "@/lib/useLocation";
 import { addRecent, clearRecent, loadPrefs, loadRecent, usePersistPrefs } from "@/lib/usePrefs";
 import { useAccount } from "@/lib/useAccount";
@@ -55,6 +57,7 @@ interface SavedPrefs {
   maxPrice: string;
   countryOnly: boolean;
   country: string;
+  category: string;
 }
 
 const AUTO_REFRESH_MS = 30_000;
@@ -80,6 +83,7 @@ export default function DashboardPage() {
   const [maxPrice, setMaxPrice] = useState("");
   const [countryOnly, setCountryOnly] = useState(false);
   const [country, setCountry] = useState("US");
+  const [category, setCategory] = useState<string>(DEFAULT_CATEGORY.id);
   const [recent, setRecent] = useState<string[]>([]);
   const [prefsLoaded, setPrefsLoaded] = useState(false);
 
@@ -124,6 +128,7 @@ export default function DashboardPage() {
     minPrice,
     maxPrice,
     country: "",
+    category: DEFAULT_CATEGORY.id as string,
     originLat: location?.lat,
     originLng: location?.lng,
   });
@@ -141,10 +146,12 @@ export default function DashboardPage() {
       minPrice,
       maxPrice,
       country: countryOnly ? country : "",
+      category,
       originLat: location?.lat,
       originLng: location?.lng,
     };
   }, [
+    category,
     query,
     maxDistance,
     minScore,
@@ -169,12 +176,13 @@ export default function DashboardPage() {
     if (typeof prefs.maxPrice === "string") setMaxPrice(prefs.maxPrice.replace(/\D/g, "").slice(0, 7));
     if (typeof prefs.countryOnly === "boolean") setCountryOnly(prefs.countryOnly);
     if (isCountryCode(prefs.country)) setCountry(prefs.country);
+    if (isCategoryId(prefs.category)) setCategory(prefs.category);
     setRecent(loadRecent());
     setPrefsLoaded(true);
   }, []);
 
   usePersistPrefs(
-    { maxDistance, minScore, hideScams, sort, minPrice, maxPrice, countryOnly, country },
+    { maxDistance, minScore, hideScams, sort, minPrice, maxPrice, countryOnly, country, category },
     prefsLoaded,
   );
 
@@ -223,6 +231,7 @@ export default function DashboardPage() {
         minPrice: Number(params.minPrice) || 0,
         maxPrice: Number(params.maxPrice) || 0,
         country: params.country,
+        category: params.category,
         originLat: params.originLat,
         originLng: params.originLng,
       });
@@ -313,6 +322,7 @@ export default function DashboardPage() {
     maxPrice,
     countryOnly,
     country,
+    category,
     runScrape,
   ]);
 
@@ -422,8 +432,9 @@ export default function DashboardPage() {
 
   // Logo click: back to the default home view (blank search, results feed), scrolled to the top.
   const goHome = useCallback(() => {
-    paramsRef.current = { ...paramsRef.current, query: "" };
+    paramsRef.current = { ...paramsRef.current, query: "", category: DEFAULT_CATEGORY.id };
     setQuery("");
+    setCategory(DEFAULT_CATEGORY.id);
     setShowSaved(false);
     setAlertsOpen(false);
     window.scrollTo({ top: 0, behavior: "smooth" });
@@ -643,6 +654,17 @@ export default function DashboardPage() {
           onCountryOnlyChange={setCountryOnly}
           country={country}
           onCountryChange={setCountry}
+        />
+
+        <BrowseBar
+          query={query}
+          category={category}
+          onCategoryChange={(id) => {
+            setShowSaved(false);
+            setCategory(id);
+          }}
+          meta={meta}
+          onPick={pickRecent}
         />
 
         {alertsOpen && (

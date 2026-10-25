@@ -57,8 +57,18 @@ function squash(text: string): string {
  */
 export function titleMatchesQuery(title: string, query: string): boolean {
   const terms = query.toLowerCase().split(/\s+/).map(squash).filter(Boolean);
+  const lower = title.toLowerCase();
   const haystack = squash(title);
-  return terms.every((term) => haystack.includes(term));
+  return terms.every((term) => {
+    // Pure numbers ("4090") may sit inside a longer token ("rtx4090").
+    if (/^\d+$/.test(term)) return haystack.includes(term);
+    // Anything with letters must START a word, so "ps5" no longer matches "FPS575".
+    // One optional space or dash between characters keeps "240 SX" / "MX-5" working.
+    const pattern = term.split("").join("[ -]?");
+    // Short model codes ("ps5", "s14") must also END the word, so "ps5" skips "PS59C turntable".
+    const end = term.length <= 3 ? "(?![a-z0-9])" : "";
+    return new RegExp(`(?:^|[^a-z0-9])${pattern}${end}`).test(lower);
+  });
 }
 
 async function fetchWithTimeout(url: string, init: RequestInit = {}, ms = 7000): Promise<Response> {
