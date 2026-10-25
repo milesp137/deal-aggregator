@@ -12,7 +12,7 @@ import UpgradeModal from "@/components/UpgradeModal";
 import { matchesAlert } from "@/lib/alerts";
 import { api, clearLicense, getLicense, setLicense } from "@/lib/client";
 import { formatPrice, timeAgo } from "@/lib/format";
-import { FREE_MAX_DISTANCE, PLAN_LIMITS, type Plan, type UpgradeReason } from "@/lib/plan";
+import { BILLING_PORTAL_URL, FREE_MAX_DISTANCE, PLAN_LIMITS, type Plan, type UpgradeReason } from "@/lib/plan";
 import { useLocation } from "@/lib/useLocation";
 import type { AlertHit, AlertKeyword, Listing, ScrapeMeta, ScrapeResponse } from "@/lib/types";
 
@@ -319,10 +319,22 @@ export default function DashboardPage() {
           </button>
 
           {isPro ? (
-            <span className="inline-flex items-center gap-2 rounded-lg border border-orange-400/50 bg-orange-500/10 px-4 py-2 text-sm font-semibold text-orange-200">
-              <Sparkles className="h-4 w-4" />
-              Pro active
-            </span>
+            <>
+              <span className="inline-flex items-center gap-2 rounded-lg border border-orange-400/50 bg-orange-500/10 px-4 py-2 text-sm font-semibold text-orange-200">
+                <Sparkles className="h-4 w-4" />
+                Pro active
+              </span>
+              {BILLING_PORTAL_URL && (
+                <a
+                  href={BILLING_PORTAL_URL}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="btn-ghost"
+                >
+                  Manage subscription
+                </a>
+              )}
+            </>
           ) : (
             <button
               type="button"

@@ -1,5 +1,7 @@
 /** Sends the license email through Resend's REST API (https://resend.com). No SDK needed. */
 
+import { BILLING_PORTAL_URL } from "./plan";
+
 export const SITE_URL = (process.env.SITE_URL || "https://deal-aggregator-coral.vercel.app").replace(/\/$/, "");
 
 const escapeHtml = (value: string) =>
@@ -23,8 +25,15 @@ export async function sendLicenseEmail(to: string, key: string): Promise<boolean
       <p style="font-size:18px;font-weight:bold;letter-spacing:1px;background:#f4f4f5;padding:12px 16px;border-radius:8px">${escapeHtml(key)}</p>
       <p><a href="${activateUrl}" style="display:inline-block;background:#ff4d2e;color:#fff;text-decoration:none;padding:12px 20px;border-radius:8px;font-weight:bold">Activate Pro</a></p>
       <p style="color:#555;font-size:14px">The button above activates Pro in your browser. On another device, open DealRadar, click <b>Go Pro</b>, then <b>Already have a license key?</b> and paste the key. Keep this key private.</p>
+      ${
+        BILLING_PORTAL_URL
+          ? `<p style="color:#555;font-size:14px">Need to update your card, see invoices, or cancel? <a href="${BILLING_PORTAL_URL}">Manage your subscription</a>.</p>`
+          : ""
+      }
     </div>`;
-  const text = `Welcome to DealRadar Pro!\n\nYour license key: ${key}\n\nActivate in one click: ${activateUrl}\n\nOn another device: open DealRadar, click Go Pro, then "Already have a license key?" and paste the key. Keep it private.`;
+  const text = `Welcome to DealRadar Pro!\n\nYour license key: ${key}\n\nActivate in one click: ${activateUrl}\n\nOn another device: open DealRadar, click Go Pro, then "Already have a license key?" and paste the key. Keep it private.${
+    BILLING_PORTAL_URL ? `\n\nManage your subscription (update card, invoices, cancel): ${BILLING_PORTAL_URL}` : ""
+  }`;
 
   try {
     const response = await fetch("https://api.resend.com/emails", {

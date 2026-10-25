@@ -40,6 +40,12 @@ export const FREE_MAX_DISTANCE = PLAN_LIMITS.free.maxDistance;
 
 export const UPGRADE_URL = "https://buy.stripe.com/4gMdR91zv94NcnWfi27bW02";
 
+/**
+ * Stripe Customer Portal login link (Stripe Dashboard -> Settings -> Billing -> Customer portal).
+ * Set NEXT_PUBLIC_BILLING_PORTAL_URL in Vercel; when empty the "Manage subscription" links are hidden.
+ */
+export const BILLING_PORTAL_URL = (process.env.NEXT_PUBLIC_BILLING_PORTAL_URL || "").trim();
+
 export type UpgradeReason =
   | "general"
   | "results"
