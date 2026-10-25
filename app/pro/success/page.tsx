@@ -4,6 +4,7 @@ import { useEffect, useState } from "react";
 import Link from "next/link";
 import { Check, Loader2, Sparkles } from "lucide-react";
 import { api, setLicense } from "@/lib/client";
+import { SUPPORT_EMAIL } from "@/lib/plan";
 
 type State =
   | { status: "waiting" }
@@ -99,6 +100,15 @@ export default function ProSuccessPage() {
           <>
             <h1 className="text-xl font-extrabold text-white">Almost there</h1>
             <p className="mt-2 text-sm text-zinc-300">{state.message}</p>
+            {SUPPORT_EMAIL && (
+              <p className="mt-3 text-xs text-zinc-400">
+                Still nothing? Email{" "}
+                <a href={`mailto:${SUPPORT_EMAIL}`} className="font-semibold text-white underline">
+                  {SUPPORT_EMAIL}
+                </a>{" "}
+                and we&apos;ll sort it out.
+              </p>
+            )}
             <Link href="/" className="btn-ghost mt-5 w-full">
               Back to DealRadar
             </Link>

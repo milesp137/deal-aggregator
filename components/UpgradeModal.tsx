@@ -1,8 +1,9 @@
 "use client";
 
+import axios from "axios";
 import { useEffect, useState, type FormEvent } from "react";
 import { Check, Loader2, Sparkles, X } from "lucide-react";
-import { PLAN_LIMITS, PRO_PERKS, UPGRADE_COPY, UPGRADE_URL, type UpgradeReason } from "@/lib/plan";
+import { PLAN_LIMITS, PRO_PERKS, SUPPORT_EMAIL, UPGRADE_COPY, UPGRADE_URL, type UpgradeReason } from "@/lib/plan";
 import { api, setLicense } from "@/lib/client";
 
 interface UpgradeModalProps {
@@ -17,6 +18,11 @@ export default function UpgradeModal({ reason, onClose, onActivated }: UpgradeMo
   const [checking, setChecking] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [showKey, setShowKey] = useState(false);
+  const [recoverOpen, setRecoverOpen] = useState(false);
+  const [recoverEmail, setRecoverEmail] = useState("");
+  const [sending, setSending] = useState(false);
+  const [sent, setSent] = useState(false);
+  const [recoverError, setRecoverError] = useState<string | null>(null);
 
   useEffect(() => {
     if (!reason) return;
@@ -47,6 +53,29 @@ export default function UpgradeModal({ reason, onClose, onActivated }: UpgradeMo
       setError("Couldn't verify the key right now. Try again in a moment.");
     } finally {
       setChecking(false);
+    }
+  };
+
+  const recover = async (event: FormEvent) => {
+    event.preventDefault();
+    const trimmed = recoverEmail.trim();
+    if (!trimmed) return;
+    setSending(true);
+    setRecoverError(null);
+    try {
+      await api.post("/api/pro/recover", { email: trimmed });
+      setSent(true);
+    } catch (err) {
+      const status = axios.isAxiosError(err) ? err.response?.status : undefined;
+      setRecoverError(
+        status === 429
+          ? "Too many requests. Try again in an hour."
+          : status === 400
+            ? "Enter a valid email address."
+            : "Couldn't send right now. Try again in a moment.",
+      );
+    } finally {
+      setSending(false);
     }
   };
 
@@ -128,6 +157,62 @@ export default function UpgradeModal({ reason, onClose, onActivated }: UpgradeMo
             </form>
           )}
           {error && <p className="mt-2 text-xs text-red-400">{error}</p>}
+
+          {sent ? (
+            <p className="mt-3 rounded-lg border border-emerald-500/40 bg-emerald-950/30 p-3 text-xs text-emerald-200">
+              If that email has an active Pro purchase, we just sent the key to it. Check your spam
+              folder too.
+            </p>
+          ) : !recoverOpen ? (
+            <button
+              type="button"
+              onClick={() => {
+                setShowKey(true);
+                setRecoverOpen(true);
+              }}
+              className="mt-2 block w-full text-xs font-semibold text-zinc-400 underline-offset-2 hover:text-white hover:underline"
+            >
+              Lost your key? Email it to me
+            </button>
+          ) : (
+            <form onSubmit={recover} className="mt-3 text-left">
+              <label className="mb-1 block text-xs text-zinc-400">
+                Enter the email you paid with and we&apos;ll send your key there.
+              </label>
+              <div className="flex gap-2">
+                <input
+                  type="email"
+                  required
+                  value={recoverEmail}
+                  onChange={(event) => setRecoverEmail(event.target.value)}
+                  placeholder="you@example.com"
+                  className="field"
+                  autoComplete="email"
+                />
+                <button
+                  type="submit"
+                  disabled={sending || !recoverEmail.trim()}
+                  className="btn-primary shrink-0"
+                >
+                  {sending ? <Loader2 className="h-4 w-4 animate-spin" /> : "Send key"}
+                </button>
+              </div>
+              {recoverError && <p className="mt-2 text-xs text-red-400">{recoverError}</p>}
+            </form>
+          )}
+
+          {SUPPORT_EMAIL && (
+            <p className="mt-2 text-xs text-zinc-500">
+              Still stuck? Email{" "}
+              <a
+                href={`mailto:${SUPPORT_EMAIL}?subject=${encodeURIComponent("Lost my DealRadar Pro key")}`}
+                className="font-semibold text-zinc-300 underline-offset-2 hover:text-white hover:underline"
+              >
+                {SUPPORT_EMAIL}
+              </a>
+              .
+            </p>
+          )}
         </div>
       </div>
     </div>

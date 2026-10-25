@@ -46,6 +46,12 @@ export const UPGRADE_URL = "https://buy.stripe.com/4gMdR91zv94NcnWfi27bW02";
  */
 export const BILLING_PORTAL_URL = (process.env.NEXT_PUBLIC_BILLING_PORTAL_URL || "").trim();
 
+/**
+ * Where people write when they lose a license key. Set NEXT_PUBLIC_SUPPORT_EMAIL in Vercel
+ * (use an address that actually receives mail); when empty the contact lines are hidden.
+ */
+export const SUPPORT_EMAIL = (process.env.NEXT_PUBLIC_SUPPORT_EMAIL || "").trim();
+
 export type UpgradeReason =
   | "general"
   | "results"

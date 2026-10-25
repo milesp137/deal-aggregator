@@ -1,5 +1,14 @@
 export type SourcePlatform = "eBay" | "Marketplace" | "Craigs";
 
+/** Every platform that can be searched, in display order. */
+export const ALL_SOURCES: SourcePlatform[] = ["Marketplace", "eBay", "Craigs"];
+
+export const SOURCE_NAMES: Record<SourcePlatform, string> = {
+  Marketplace: "Facebook Marketplace",
+  eBay: "eBay",
+  Craigs: "Craigslist",
+};
+
 /** A normalized listing, identical in shape regardless of which platform it came from. */
 export interface Listing {
   id: string;
@@ -48,6 +57,8 @@ export interface ScrapeRequest {
   /** Miles from origin. Values >= 1500 mean "any distance". */
   maxDistance: number;
   minDealScore: number;
+  /** Platforms to search. Omitted or empty means all of them. */
+  sources?: SourcePlatform[];
   originLat?: number;
   originLng?: number;
 }

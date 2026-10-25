@@ -7,6 +7,7 @@ import type {
   ScrapeResponse,
   SourcePlatform,
 } from "@/lib/types";
+import { ALL_SOURCES } from "@/lib/types";
 import {
   getCraigslistHtml,
   getEbayPayload,
@@ -353,8 +354,17 @@ function toNumber(value: unknown, fallback: number): number {
   return Number.isFinite(parsed) ? parsed : fallback;
 }
 
+/** Accepts an array (POST) or a comma separated string (GET); unknown names are ignored. */
+function parseSources(value: unknown): SourcePlatform[] {
+  const raw = Array.isArray(value) ? value : typeof value === "string" ? value.split(",") : [];
+  const wanted = new Set(raw.map((item) => (typeof item === "string" ? item.trim() : "")));
+  const chosen = ALL_SOURCES.filter((source) => wanted.has(source));
+  return chosen.length > 0 ? chosen : ALL_SOURCES;
+}
+
 function parseRequest(input: Record<string, unknown>): Required<ScrapeRequest> {
   return {
+    sources: parseSources(input.sources),
     query: typeof input.query === "string" ? input.query.trim().slice(0, 120) : "",
     maxDistance: clamp(toNumber(input.maxDistance, ANY_DISTANCE), 1, ANY_DISTANCE),
     minDealScore: clamp(Math.round(toNumber(input.minDealScore, 1)), 1, 10),
@@ -373,32 +383,45 @@ async function runScrape(request: Required<ScrapeRequest>, plan: Plan): Promise<
   const keywords = request.query ? [request.query] : DEFAULT_KEYWORDS;
   const perKeywordLimit = request.query ? undefined : DEFAULT_PER_KEYWORD_LIMIT;
 
+  // Sources the user switched off are never contacted (faster, and saves proxy bandwidth).
+  const wants = (platform: SourcePlatform) => request.sources.includes(platform);
+  const skipped = async (): Promise<SourceResult> => ({ drafts: [], live: false });
+
   const [ebay, marketplace, craigslist] = await Promise.all([
-    liveOrSample(
-      "eBay",
-      isEbayConfigured()
-        ? () => scrapeKeywords(keywords, (keyword) => scrapeEbay(keyword, perKeywordLimit))
-        : null,
-      "eBay API keys not configured (set EBAY_CLIENT_ID and EBAY_CLIENT_SECRET)",
-      async () => normalizeEbay(await fetchSource(() => getEbayPayload(now)), request.query),
-    ),
-    liveOrSample(
-      "Marketplace",
-      () =>
-        scrapeKeywords(keywords, (keyword) =>
-          scrapeFacebookMarketplace(keyword, origin, perKeywordLimit),
+    !wants("eBay")
+      ? skipped()
+      : liveOrSample(
+          "eBay",
+          isEbayConfigured()
+            ? () => scrapeKeywords(keywords, (keyword) => scrapeEbay(keyword, perKeywordLimit))
+            : null,
+          "eBay API keys not configured (set EBAY_CLIENT_ID and EBAY_CLIENT_SECRET)",
+          async () => normalizeEbay(await fetchSource(() => getEbayPayload(now)), request.query),
         ),
-      "Facebook Marketplace scraper unavailable",
-      async () =>
-        normalizeMarketplace(await fetchSource(() => getMarketplacePayload(now)), request.query),
-    ),
-    liveOrSample(
-      "Craigs",
-      () =>
-        scrapeKeywords(keywords, (keyword) => scrapeCraigslist(keyword, origin, perKeywordLimit)),
-      "Craigslist scraper unavailable",
-      async () => parseCraigslist(await fetchSource(() => getCraigslistHtml(now)), request.query),
-    ),
+    !wants("Marketplace")
+      ? skipped()
+      : liveOrSample(
+          "Marketplace",
+          () =>
+            scrapeKeywords(keywords, (keyword) =>
+              scrapeFacebookMarketplace(keyword, origin, perKeywordLimit),
+            ),
+          "Facebook Marketplace scraper unavailable",
+          async () =>
+            normalizeMarketplace(await fetchSource(() => getMarketplacePayload(now)), request.query),
+        ),
+    !wants("Craigs")
+      ? skipped()
+      : liveOrSample(
+          "Craigs",
+          () =>
+            scrapeKeywords(keywords, (keyword) =>
+              scrapeCraigslist(keyword, origin, perKeywordLimit),
+            ),
+          "Craigslist scraper unavailable",
+          async () =>
+            parseCraigslist(await fetchSource(() => getCraigslistHtml(now)), request.query),
+        ),
   ]);
 
   const live: Record<SourcePlatform, boolean> = {

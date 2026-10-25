@@ -5,6 +5,7 @@ import {
   createSessionRecord,
   generateLicenseKey,
   getSessionRecord,
+  indexEmail,
   revokeByRefs,
   saveSessionRecord,
 } from "@/lib/licenses";
@@ -44,6 +45,7 @@ async function fulfill(session: StripeObject): Promise<void> {
 
   const existing = await getSessionRecord(sessionId);
   if (existing) {
+    await indexEmail(email, sessionId);
     // Stripe retried the webhook. Just make sure the email went out.
     if (!existing.emailed && email) {
       const emailed = await sendLicenseEmail(email, existing.key);
@@ -56,6 +58,7 @@ async function fulfill(session: StripeObject): Promise<void> {
   const created = await createSessionRecord(sessionId, record);
   if (!created) return; // another delivery of the same event won the race
 
+  await indexEmail(email, sessionId);
   await activateKey(record.key, [session.customer, session.subscription, session.payment_intent]);
   console.log(`[license] issued key for session ${sessionId}`);
 

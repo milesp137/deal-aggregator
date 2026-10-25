@@ -12,13 +12,23 @@ import UpgradeModal from "@/components/UpgradeModal";
 import { matchesAlert } from "@/lib/alerts";
 import { api, clearLicense, getLicense, setLicense } from "@/lib/client";
 import { formatPrice, timeAgo } from "@/lib/format";
-import { BILLING_PORTAL_URL, FREE_MAX_DISTANCE, PLAN_LIMITS, type Plan, type UpgradeReason } from "@/lib/plan";
+import { BILLING_PORTAL_URL, FREE_MAX_DISTANCE, PLAN_LIMITS, SUPPORT_EMAIL, type Plan, type UpgradeReason } from "@/lib/plan";
 import { useLocation } from "@/lib/useLocation";
-import type { AlertHit, AlertKeyword, Listing, ScrapeMeta, ScrapeResponse } from "@/lib/types";
+import {
+  ALL_SOURCES,
+  type AlertHit,
+  type AlertKeyword,
+  type Listing,
+  type ScrapeMeta,
+  type ScrapeResponse,
+  type SourcePlatform,
+} from "@/lib/types";
 
 const AUTO_REFRESH_MS = 30_000;
 const FILTER_DEBOUNCE_MS = 350;
 const MAX_VISIBLE_HITS = 4;
+
+const SOURCES_KEY = "dealradar:sources";
 
 const PLATFORM_NAMES: Record<string, string> = {
   eBay: "eBay",
@@ -35,6 +45,7 @@ export default function DashboardPage() {
   const [minScore, setMinScore] = useState(1);
   const [hideScams, setHideScams] = useState(false);
   const [autoRefresh, setAutoRefresh] = useState(false);
+  const [sources, setSources] = useState<SourcePlatform[]>(ALL_SOURCES);
 
   // Results
   const [listings, setListings] = useState<Listing[]>([]);
@@ -63,6 +74,7 @@ export default function DashboardPage() {
     query,
     maxDistance,
     minScore,
+    sources,
     originLat: location?.lat,
     originLng: location?.lng,
   });
@@ -75,10 +87,33 @@ export default function DashboardPage() {
       query,
       maxDistance,
       minScore,
+      sources,
       originLat: location?.lat,
       originLng: location?.lng,
     };
-  }, [query, maxDistance, minScore, location?.lat, location?.lng]);
+  }, [query, maxDistance, minScore, sources, location?.lat, location?.lng]);
+
+  // Remember which sites the visitor wants between visits.
+  useEffect(() => {
+    try {
+      const saved = JSON.parse(window.localStorage.getItem(SOURCES_KEY) ?? "null") as unknown;
+      if (Array.isArray(saved)) {
+        const valid = ALL_SOURCES.filter((source) => saved.includes(source));
+        if (valid.length > 0) setSources(valid);
+      }
+    } catch {
+      /* ignore corrupt storage */
+    }
+  }, []);
+
+  const changeSources = useCallback((next: SourcePlatform[]) => {
+    setSources(next);
+    try {
+      window.localStorage.setItem(SOURCES_KEY, JSON.stringify(next));
+    } catch {
+      /* storage unavailable */
+    }
+  }, []);
 
   useEffect(() => {
     alertsRef.current = alerts;
@@ -95,6 +130,7 @@ export default function DashboardPage() {
         query: params.query,
         maxDistance: params.maxDistance,
         minDealScore: params.minScore,
+        sources: params.sources,
         originLat: params.originLat,
         originLng: params.originLng,
       });
@@ -169,7 +205,7 @@ export default function DashboardPage() {
     if (!hasLocation) return;
     const timer = setTimeout(() => void runScrape(), FILTER_DEBOUNCE_MS);
     return () => clearTimeout(timer);
-  }, [hasLocation, location?.lat, location?.lng, maxDistance, minScore, runScrape]);
+  }, [hasLocation, location?.lat, location?.lng, maxDistance, minScore, sources, runScrape]);
 
   // Optional live polling (Pro only).
   useEffect(() => {
@@ -364,6 +400,8 @@ export default function DashboardPage() {
           onRun={() => void runScrape()}
           isPro={isPro}
           onProRequired={requirePro}
+          sources={sources}
+          onSourcesChange={changeSources}
         />
 
         {alertsOpen && (
@@ -466,7 +504,8 @@ export default function DashboardPage() {
             <PackageSearch className="mb-3 h-10 w-10 text-zinc-600" />
             <p className="text-lg font-semibold text-zinc-200">No listings match these filters</p>
             <p className="mt-1 max-w-sm text-sm text-zinc-500">
-              Try a broader keyword, a larger distance, or a lower minimum deal score.
+              Try a broader keyword, a larger distance, a lower minimum deal score
+              {sources.length < ALL_SOURCES.length ? ", or turn on more sites under \u201cSearch on\u201d" : ""}.
             </p>
           </div>
         ) : (
@@ -495,6 +534,18 @@ export default function DashboardPage() {
           />
         )}
       </main>
+
+      {SUPPORT_EMAIL && (
+        <footer className="mt-12 border-t border-line pt-6 text-center text-xs text-zinc-500">
+          Lost your Pro license key or need help?{" "}
+          <a
+            href={`mailto:${SUPPORT_EMAIL}?subject=${encodeURIComponent("DealRadar support")}`}
+            className="font-semibold text-zinc-300 underline-offset-2 hover:text-white hover:underline"
+          >
+            {SUPPORT_EMAIL}
+          </a>
+        </footer>
+      )}
 
       <UpgradeModal
         reason={upgradeReason}

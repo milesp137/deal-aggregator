@@ -1,8 +1,9 @@
 "use client";
 
 import type { FormEvent } from "react";
-import { Gauge, Loader2, Lock, MapPin, Radar, RefreshCw, Search, ShieldOff } from "lucide-react";
+import { Check, Gauge, Loader2, Lock, MapPin, Radar, RefreshCw, Search, ShieldOff } from "lucide-react";
 import { FREE_MAX_DISTANCE, type UpgradeReason } from "@/lib/plan";
+import { ALL_SOURCES, SOURCE_NAMES, type SourcePlatform } from "@/lib/types";
 
 export const ANY_DISTANCE = 1500;
 
@@ -21,6 +22,9 @@ interface ControlBarProps {
   onRun: () => void;
   isPro: boolean;
   onProRequired: (reason: UpgradeReason) => void;
+  /** Platforms currently being searched. */
+  sources: SourcePlatform[];
+  onSourcesChange: (sources: SourcePlatform[]) => void;
 }
 
 export default function ControlBar(props: ControlBarProps) {
@@ -39,7 +43,19 @@ export default function ControlBar(props: ControlBarProps) {
     onRun,
     isPro,
     onProRequired,
+    sources,
+    onSourcesChange,
   } = props;
+
+  const toggleSource = (source: SourcePlatform) => {
+    if (sources.includes(source)) {
+      // At least one site must stay on, otherwise there is nothing to search.
+      if (sources.length === 1) return;
+      onSourcesChange(sources.filter((item) => item !== source));
+    } else {
+      onSourcesChange(ALL_SOURCES.filter((item) => item === source || sources.includes(item)));
+    }
+  };
 
   const submit = (event: FormEvent) => {
     event.preventDefault();
@@ -124,7 +140,31 @@ export default function ControlBar(props: ControlBarProps) {
         </button>
       </div>
 
-      <div className="mt-4 flex flex-wrap items-center gap-x-6 gap-y-2 border-t border-line pt-4 text-sm text-zinc-300">
+      <div className="mt-4 flex flex-wrap items-center gap-2 border-t border-line pt-4 text-sm text-zinc-300">
+        <span className="mr-1 text-xs font-semibold uppercase tracking-wider text-zinc-400">Search on</span>
+        {ALL_SOURCES.map((source) => {
+          const active = sources.includes(source);
+          return (
+            <button
+              key={source}
+              type="button"
+              role="switch"
+              aria-checked={active}
+              onClick={() => toggleSource(source)}
+              className={`inline-flex items-center gap-1.5 rounded-full border px-3 py-1 text-xs font-semibold transition ${
+                active
+                  ? "border-orange-400/60 bg-orange-500/15 text-orange-200"
+                  : "border-line bg-raised text-zinc-500 hover:text-zinc-300"
+              }`}
+            >
+              {active ? <Check className="h-3.5 w-3.5" /> : <span className="h-3.5 w-3.5" />}
+              {SOURCE_NAMES[source]}
+            </button>
+          );
+        })}
+      </div>
+
+      <div className="mt-3 flex flex-wrap items-center gap-x-6 gap-y-2 text-sm text-zinc-300">
         <label className="inline-flex cursor-pointer items-center gap-2">
           <input
             type="checkbox"

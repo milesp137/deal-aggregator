@@ -90,6 +90,66 @@ export async function revokeByRefs(refs: (string | null | undefined)[]): Promise
   return revoked;
 }
 
+export const normalizeEmail = (email: string) => email.trim().toLowerCase();
+
+const emailKey = (email: string) => `dealradar:license:email:${normalizeEmail(email)}`;
+const SESSION_PREFIX = "dealradar:license:session:";
+const BACKFILL_MARKER = "dealradar:license:email_index_built";
+
+/** Remembers which checkout sessions belong to an email so lost keys can be re-sent. */
+export async function indexEmail(email: string | null, sessionId: string): Promise<void> {
+  if (!email) return;
+  const redis = getRedis();
+  if (redis) await redis.sadd(emailKey(email), sessionId);
+  // The in-memory store is searched directly, so it needs no separate index.
+}
+
+/**
+ * Purchases made before the email index existed are indexed once, the first time anyone asks
+ * for a key. Gives up quietly (and retries next time) if the scan doesn't finish.
+ */
+async function backfillEmailIndex(): Promise<void> {
+  const redis = getRedis();
+  if (!redis || (await redis.get(BACKFILL_MARKER))) return;
+
+  let cursor = "0";
+  let rounds = 0;
+  do {
+    const [next, keys] = await redis.scan(cursor, { match: `${SESSION_PREFIX}*`, count: 200 });
+    cursor = String(next);
+    if (keys.length > 0) {
+      const records = await redis.mget<(LicenseRecord | null)[]>(...keys);
+      await Promise.all(
+        records.map((record, index) =>
+          record?.email ? indexEmail(record.email, keys[index].slice(SESSION_PREFIX.length)) : null,
+        ),
+      );
+    }
+    rounds += 1;
+  } while (cursor !== "0" && rounds < 50);
+
+  if (cursor === "0") await redis.set(BACKFILL_MARKER, "1");
+}
+
+/** All license records bought with this email, newest first. */
+export async function findRecordsByEmail(email: string): Promise<LicenseRecord[]> {
+  const target = normalizeEmail(email);
+  const redis = getRedis();
+  let records: LicenseRecord[];
+
+  if (redis) {
+    await backfillEmailIndex();
+    const ids = (await redis.smembers(emailKey(target))) as string[];
+    const found = await Promise.all(ids.map((id) => getSessionRecord(id)));
+    records = found.filter((record): record is LicenseRecord => record !== null);
+  } else {
+    records = [...memory().sessions.values()].filter(
+      (record) => record.email !== null && normalizeEmail(record.email) === target,
+    );
+  }
+  return records.sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+}
+
 export async function isKeyActive(key: string): Promise<boolean> {
   const redis = getRedis();
   if (redis) return (await redis.sismember(PRO_KEYS_SET, key)) === 1;
