@@ -139,9 +139,47 @@ export interface ScrapeRequest {
   category?: string;
   /** Words or phrases to leave out, comma separated ("drill, knife, lighter"). */
   exclude?: string;
+  /** "items" = just the thing searched for, "parts" = parts and accessories only, "all" = both. */
+  kind?: ResultKind;
+  /** Filters picked from the results (eBay's own: Transmission, Platform...). */
+  aspects?: Record<string, string>;
+  /** Category the picked filters belong to (from `meta.facetCategory`). */
+  facetCategory?: string;
+  /** Category-search the filters were found in (from `meta.facetScope`). */
+  facetScope?: string;
+}
+
+export type ResultKind = "all" | "items" | "parts";
+
+/** A filter the shopper can pick (eBay's "Transmission", "Platform"...) with its choices. */
+export interface Facet {
+  name: string;
+  values: { value: string; count: number }[];
+}
+
+/** A filter that came from words typed in the search box ("manual" in "jeep cherokee in manual"). */
+export interface AutoFilter {
+  label: string;
+  /** The words to remove from the search box to switch this filter off. */
+  phrase: string;
+  /** True when no listing could match (eBay has no manual Cherokees). */
+  noMatches: boolean;
 }
 
 export interface ScrapeMeta {
+  /** Filters offered for these results. */
+  facets: Facet[];
+  facetCategory: string | null;
+  facetScope: string;
+  /** Filters currently applied, by name. */
+  activeAspects: Record<string, string>;
+  /** Filters taken from the typed search. */
+  autoFilters: AutoFilter[];
+  /** Matching listings that are the item itself vs parts/accessories (before the kind filter). */
+  kindCounts: { items: number; parts: number };
+  kind: ResultKind;
+  /** True when filters are applied and sites that can't filter were left out. */
+  filtersLimitedToEbay: boolean;
   /** The search these results are for ("" while browsing a category). */
   query: string;
   /** Category browsed when the search was blank. */

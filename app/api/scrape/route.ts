@@ -2,6 +2,7 @@ import { timingSafeEqual } from "crypto";
 import { NextResponse } from "next/server";
 import * as cheerio from "cheerio";
 import type {
+  Facet,
   Listing,
   ScrapeMeta,
   ScrapeRequest,
@@ -26,7 +27,15 @@ import { suggestRefinements } from "@/lib/refine";
 import type { Plan } from "@/lib/plan";
 import { limitsFor, planForRequest } from "@/lib/pro";
 import { isCountryCode } from "@/lib/countries";
-import { classifyTitle, MIN_ON_TARGET_TO_HIDE } from "@/lib/relevance";
+import {
+  classifyTitle,
+  isPartQuery,
+  isVehicleQuery,
+  looksLikeVehiclePart,
+  MIN_ON_TARGET_TO_HIDE,
+} from "@/lib/relevance";
+import { ebayFlow, resolveTypedFilters, type ResolvedFilters } from "@/lib/ebayFlow";
+import { textMatchesFilter } from "@/lib/queryFilters";
 import { similarPrices } from "@/lib/similar";
 import { buildReference, scoreListing, type PriceReference } from "@/lib/scoring";
 import {
@@ -408,7 +417,29 @@ function parseRequest(input: Record<string, unknown>): Required<ScrapeRequest> {
     originLat: clamp(toNumber(input.originLat, DEFAULT_ORIGIN.lat), -90, 90),
     originLng: clamp(toNumber(input.originLng, DEFAULT_ORIGIN.lng), -180, 180),
     category: isCategoryId(input.category) ? input.category : DEFAULT_CATEGORY.id,
+    kind: input.kind === "items" || input.kind === "parts" ? input.kind : "all",
+    aspects: parseAspects(input.aspects),
+    facetCategory: typeof input.facetCategory === "string" && /^\d{1,10}$/.test(input.facetCategory) ? input.facetCategory : "",
+    facetScope: typeof input.facetScope === "string" && /^\d{1,10}$/.test(input.facetScope) ? input.facetScope : "",
   };
+}
+
+const MAX_ASPECTS = 4;
+
+/** Picked filters: { "Transmission": "Manual" }. Names and values are length-limited text. */
+function parseAspects(value: unknown): Record<string, string> {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) return {};
+  const result: Record<string, string> = {};
+  for (const [name, aspectValue] of Object.entries(value as Record<string, unknown>)) {
+    if (Object.keys(result).length >= MAX_ASPECTS) break;
+    if (typeof aspectValue !== "string") continue;
+    const cleanName = name.trim().slice(0, 40);
+    const cleanValue = aspectValue.trim().slice(0, 60);
+    // eBay's filter syntax can't carry these characters.
+    if (!cleanName || !cleanValue || /[,{}|:]/.test(cleanName + cleanValue.replace(/:/g, ""))) continue;
+    result[cleanName] = cleanValue;
+  }
+  return result;
 }
 
 /**
@@ -452,9 +483,41 @@ function interleaveSources(
   return result;
 }
 
-async function runScrape(request: Required<ScrapeRequest>, plan: Plan): Promise<ScrapeResponse> {
+async function runScrape(typed: Required<ScrapeRequest>, plan: Plan): Promise<ScrapeResponse> {
   const startedAt = Date.now();
   const now = startedAt;
+
+  // Words like "manual" in "jeep cherokee in manual" are filters, not search words, but only if
+  // eBay confirms this search has that filter (Transmission). Otherwise they stay in the query.
+  let resolved: ResolvedFilters | null = null;
+  if (typed.query && typed.sources.includes("eBay") && isEbayConfigured()) {
+    resolved = await resolveTypedFilters(typed.query, typed.country).catch(() => null);
+  }
+  // Filters picked from the list keep working next to typed ones when both belong to the same
+  // eBay category; otherwise the typed ones win.
+  const pickedAspects = Object.keys(typed.aspects).length > 0;
+  const samePlace =
+    resolved !== null &&
+    resolved.aspectCategory === typed.facetCategory &&
+    resolved.scope === typed.facetScope;
+  const request: Required<ScrapeRequest> = {
+    ...typed,
+    query: resolved ? resolved.query : typed.query,
+    aspects: resolved ? { ...(samePlace ? typed.aspects : {}), ...resolved.aspects } : typed.aspects,
+    facetCategory: resolved ? resolved.aspectCategory : typed.facetCategory,
+    facetScope: resolved ? resolved.scope : typed.facetScope,
+  };
+  const noMatchFilters = resolved?.unavailable ?? [];
+  const aspectsActive = Object.keys(request.aspects).length > 0;
+  // Only eBay can filter by its own item details. Typed filters are also checked as plain text on
+  // the other sites; filters picked from the list leave those sites out.
+  const pickedFilters = pickedAspects && aspectsActive;
+  const textFilters = resolved ? [...resolved.applied.map((entry) => entry.filter), ...noMatchFilters] : [];
+  let ebayExtra: { facets: Facet[]; facetScope: string; facetCategory: string | null } = {
+    facets: [],
+    facetScope: "",
+    facetCategory: null,
+  };
 
   const origin = { lat: request.originLat, lng: request.originLng };
 
@@ -479,6 +542,7 @@ async function runScrape(request: Required<ScrapeRequest>, plan: Plan): Promise<
   const wants = (platform: SourcePlatform) =>
     request.sources.includes(platform) &&
     (platform === "eBay" || usOnlySitesAllowed) &&
+    (platform === "eBay" || !pickedFilters) &&
     (request.query !== "" || browseSites.includes(platform));
   const skipped = async (): Promise<SourceResult> => ({ drafts: [], live: false });
   const noSample = async () => [] as ListingDraft[];
@@ -489,15 +553,25 @@ async function runScrape(request: Required<ScrapeRequest>, plan: Plan): Promise<
       : liveOrSample(
           "eBay",
           isEbayConfigured()
-            ? () =>
-              scrapeKeywords(keywordsFor("eBay"), (keyword) =>
-                scrapeEbay(
-                  keyword,
-                  perKeywordLimit ?? EBAY_SEARCH_LIMIT,
-                  request.country,
-                  excludeTerms,
-                ),
-              )
+            ? request.query
+              ? async () => {
+                  if (resolved && resolved.unavailable.length > 0) return []; // eBay has none
+                  const flow = await ebayFlow({
+                    query: request.query,
+                    limit: EBAY_SEARCH_LIMIT,
+                    country: request.country,
+                    exclude: excludeTerms,
+                    aspects: request.aspects,
+                    aspectCategory: request.facetCategory,
+                    scope: request.facetScope,
+                  });
+                  ebayExtra = flow;
+                  return flow.drafts;
+                }
+              : () =>
+                  scrapeKeywords(keywordsFor("eBay"), (keyword) =>
+                    scrapeEbay(keyword, perKeywordLimit ?? EBAY_SEARCH_LIMIT, request.country, excludeTerms),
+                  )
             : null,
           "eBay API keys not configured (set EBAY_CLIENT_ID and EBAY_CLIENT_SECRET)",
           async () => normalizeEbay(await fetchSource(() => getEbayPayload(now)), request.query),
@@ -519,9 +593,17 @@ async function runScrape(request: Required<ScrapeRequest>, plan: Plan): Promise<
       : liveOrSample(
           "Craigs",
           () =>
-            scrapeKeywords(keywordsFor("Craigs"), (keyword) =>
-              scrapeCraigslist(keyword, origin, perKeywordLimit),
-            ),
+            scrapeKeywords(keywordsFor("Craigs"), async (keyword) => {
+              // Cars & trucks are a separate Craigslist section, so a typed search looks there too.
+              const searchCars = request.query !== "";
+              const [general, cars] = await Promise.all([
+                scrapeCraigslist(keyword, origin, perKeywordLimit),
+                searchCars
+                  ? scrapeCraigslist(keyword, origin, perKeywordLimit, "cta").catch(() => [])
+                  : Promise.resolve([] as ListingDraft[]),
+              ]);
+              return [...cars, ...general];
+            }),
           "Craigslist scraper unavailable",
           async () =>
             parseCraigslist(await fetchSource(() => getCraigslistHtml(now)), request.query),
@@ -585,7 +667,13 @@ async function runScrape(request: Required<ScrapeRequest>, plan: Plan): Promise<
     ...reverb.drafts,
   ]
     .filter((draft) => (seen.has(draft.id) ? false : (seen.add(draft.id), true)))
-    .filter((draft) => !excludeTerms.some((term) => titleMatchesQuery(draft.title, term)));
+    .filter((draft) => !excludeTerms.some((term) => titleMatchesQuery(draft.title, term)))
+    // eBay applied the typed filters itself; the other sites are checked against their text.
+    .filter(
+      (draft) =>
+        draft.sourcePlatform === "eBay" ||
+        textFilters.every((filter) => textMatchesFilter(filter, `${draft.title} ${draft.description}`)),
+    );
 
   const sources: Record<SourcePlatform, number> = {
     eBay: 0,
@@ -619,20 +707,42 @@ async function runScrape(request: Required<ScrapeRequest>, plan: Plan): Promise<
       : (keywords.find((keyword) => titleMatchesQuery(draft.title, keyword)) ?? "other");
   const junkIds = new Set<string>();
   const madeForIds = new Set<string>();
+  // Components and accessories of a vehicle ("1997-2001 Cherokee mirror"): shown after the vehicles.
+  const partIds = new Set<string>();
   for (const draft of matched) {
+    // Listings from a vehicles-only search ARE the vehicle; nothing to judge.
+    if (draft.kindHint === "item") continue;
     const topic = request.query || groupOf(draft);
     if (topic === "other") continue;
     const kind = classifyTitle(draft.title, topic);
     if (kind === "junk") junkIds.add(draft.id);
     else if (kind === "made-for" && (request.query || category.demoteMadeFor)) madeForIds.add(draft.id);
+    else if (isVehicleQuery(topic) && !isPartQuery(topic) && looksLikeVehiclePart(draft.title, topic)) {
+      partIds.add(draft.id);
+    }
   }
-  const onTargetCount = matched.length - junkIds.size - madeForIds.size;
+  // "Parts" in the Items/Parts toggle: accessories, junk and vehicle parts. "Made for" listings
+  // count too, unless the search itself is for such a thing (coilovers).
+  const partsAreWhatWasSearched = request.query !== "" && isPartQuery(request.query);
+  const isPartLike = (id: string) =>
+    junkIds.has(id) || partIds.has(id) || (madeForIds.has(id) && !partsAreWhatWasSearched);
+  const kindCounts = {
+    items: matched.filter((draft) => !isPartLike(draft.id)).length,
+    parts: matched.filter((draft) => isPartLike(draft.id)).length,
+  };
+
+  const onTargetCount = matched.length - junkIds.size - madeForIds.size - partIds.size;
+  const hideJunk = request.kind !== "parts" && onTargetCount >= MIN_ON_TARGET_TO_HIDE;
+  const afterJunk = hideJunk ? matched.filter((draft) => !junkIds.has(draft.id)) : matched;
   const refined =
-    onTargetCount >= MIN_ON_TARGET_TO_HIDE
-      ? matched.filter((draft) => !junkIds.has(draft.id))
-      : matched;
-  // 0 = the item itself, 1 = made for it, 2 = junk.
-  const relevanceTier = (id: string) => (junkIds.has(id) ? 2 : madeForIds.has(id) ? 1 : 0);
+    request.kind === "items"
+      ? afterJunk.filter((draft) => !isPartLike(draft.id))
+      : request.kind === "parts"
+        ? afterJunk.filter((draft) => isPartLike(draft.id))
+        : afterJunk;
+  // 0 = the item itself, 1 = made for it or a part, 2 = junk. Parts-only mode ranks them equally.
+  const relevanceTier = (id: string) =>
+    request.kind === "parts" ? 0 : junkIds.has(id) ? 2 : madeForIds.has(id) || partIds.has(id) ? 1 : 0;
 
   // Price reference: what comparable listings in THIS search cost right now. A blank search mixes
   // several topics, so those are compared within their own topic. The market table is the
@@ -819,9 +929,25 @@ async function runScrape(request: Required<ScrapeRequest>, plan: Plan): Promise<
     : [];
 
   const meta: ScrapeMeta = {
-    query: request.query,
+    // The query as typed, so the page can tell these results belong to what is in the box.
+    query: typed.query,
     category: category.id,
     suggestions,
+    facets: ebayExtra.facets,
+    facetCategory: ebayExtra.facetCategory,
+    facetScope: ebayExtra.facetScope,
+    activeAspects: request.aspects,
+    autoFilters: [
+      ...(resolved?.applied ?? []).map((entry) => ({
+        label: entry.filter.label,
+        phrase: entry.filter.phrase,
+        noMatches: false,
+      })),
+      ...noMatchFilters.map((filter) => ({ label: filter.label, phrase: filter.phrase, noMatches: true })),
+    ],
+    kindCounts,
+    kind: request.kind,
+    filtersLimitedToEbay: pickedFilters,
     totalScraped: drafts.length,
     returned: listings.length,
     plan,

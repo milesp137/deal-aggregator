@@ -215,3 +215,69 @@ export function classifyTitle(title: string, query: string): Relevance {
 
 /** Junk is only hidden when at least this many better results exist; otherwise it stays, last. */
 export const MIN_ON_TARGET_TO_HIDE = 6;
+
+/* ------------------------------------------------------------------- vehicle parts */
+
+const VEHICLE_WORDS = [
+  "jeep", "ford", "chevy", "chevrolet", "dodge", "ram", "gmc", "chrysler", "buick", "cadillac", "lincoln",
+  "pontiac", "oldsmobile", "plymouth", "mercury", "saturn", "hummer", "tesla", "nissan", "datsun", "infiniti",
+  "toyota", "lexus", "scion", "honda", "acura", "mazda", "subaru", "mitsubishi", "suzuki", "isuzu", "hyundai",
+  "kia", "genesis", "bmw", "mini", "mercedes", "benz", "audi", "volkswagen", "vw", "porsche", "volvo", "saab",
+  "jaguar", "land rover", "range rover", "fiat", "alfa romeo", "mustang", "camaro", "corvette", "charger",
+  "challenger", "wrangler", "cherokee", "bronco", "civic", "accord", "miata", "mx-?5", "supra", "silvia",
+  "skyline", "240sx", "300zx", "350z", "370z", "wrx", "sti", "evo", "lancer", "tacoma", "tundra", "f-?150",
+  "silverado", "sierra", "truck", "pickup truck", "suv", "sedan", "coupe", "hatchback", "wagon", "minivan",
+  "car", "cars", "motorcycle",
+];
+const VEHICLE_QUERY = new RegExp(`\\b(?:${VEHICLE_WORDS.join("|")})\\b`, "i");
+
+/** True when the search is about a car, truck or similar (so "mirror" means a car part). */
+export const isVehicleQuery = (query: string) => VEHICLE_QUERY.test(query);
+
+/** Nouns that mean "a component or accessory for a vehicle", not the vehicle itself. */
+const VEHICLE_PART_TERMS = [
+  "bumpers?", "fenders?", "hoods?", "grille?s?", "mirrors?", "doors?", "tailgates?", "lift ?gates?",
+  "trunk lids?", "windshields?", "quarter panels?", "spoilers?", "running boards?", "nerf bars?",
+  "bull ?bars?", "roof racks?", "hitch(?:es)?", "tow hooks?", "lift kits?", "body kits?",
+  "head ?lights?", "tail ?lights?", "fog ?lights?", "head ?lamps?", "tail ?lamps?", "lights?", "lamps?",
+  "axles?", "transmissions?", "transfer cases?", "differentials?", "drive ?shafts?", "u-?joints?",
+  "clutch(?: kits?)?", "flywheels?", "engines?", "motors?", "cylinder heads?", "pistons?", "crank ?shafts?",
+  "cam ?shafts?", "timing (?:belts?|chains?|kits?)", "gaskets?", "turbos?", "turbochargers?",
+  "superchargers?", "intakes?", "manifolds?", "exhausts?", "mufflers?", "catalytic", "downpipes?", "headers?",
+  "radiators?", "condensers?", "compressors?", "alternators?", "starters?", "water pumps?", "fuel pumps?",
+  "pumps?", "injectors?", "throttle bod(?:y|ies)", "sensors?", "modules?", "ecus?", "pcms?", "tcms?",
+  "fuse boxes?", "wiring harness(?:es)?", "harness(?:es)?", "relays?", "switch(?:es)?", "ignition coils?",
+  "spark plugs?", "brakes?", "rotors?", "calipers?", "brake pads?", "master cylinders?", "struts?", "shocks?",
+  "coil ?overs?", "springs?", "control arms?", "sway bars?", "bushings?", "ball joints?", "tie rods?",
+  "bearings?", "hubs?", "wheels?", "rims?", "tires?", "hub ?caps?", "lug nuts?", "seats?", "seat covers?",
+  "dash(?:board)?s?", "center consoles?", "steering wheels?", "shift knobs?", "shifters?", "pedals?",
+  "carpets?", "floor mats?", "headliners?", "sun ?visors?", "door panels?", "arm ?rests?", "emblems?",
+  "badges?", "key fobs?", "fobs?", "wipers?", "hoses?", "belts?", "filters?", "gas caps?", "brackets?",
+  "moldings?", "weather ?strip(?:ping)?", "latch(?:es)?", "handles?", "hinges?", "linkages?",
+  "oem", "aftermarket", "replacement", "fitment", "compatible", "part numbers?",
+  // "fits 1997-2001 Jeep": a model-year range is how parts advertise what they fit
+  "fits?",
+];
+const VEHICLE_PART = new RegExp(`\\b(?:${VEHICLE_PART_TERMS.join("|")})\\b`, "i");
+const FITMENT_YEARS = /\b(?:19|20)\d{2}\s?[-–to]+\s?(?:(?:19|20)\d{2}|\d{2})\b/i;
+/** Things only a whole vehicle's listing says. */
+const WHOLE_VEHICLE =
+  /\b\d{2,3}(?:,\d{3})?\s?k?\s?(?:miles|mi)\b|\bvin\b|\bclean title\b|\bsalvage title\b|\bruns (?:and|&) drives\b|\bone owner\b|\b\d\.\dl\b.*\b(?:4x4|awd|4wd|fwd|rwd)\b/i;
+
+/** True when the search itself names a part ("coilovers", "te37 wheels"): then parts are the item. */
+export const isPartQuery = (query: string) => VEHICLE_PART.test(query);
+
+/**
+ * For vehicle searches: does this title read like a component or accessory rather than a whole
+ * vehicle? The words the shopper typed are ignored. Callers decide when this applies (only for
+ * vehicle searches that aren't themselves searching for a part).
+ */
+export function looksLikeVehiclePart(title: string, query: string): boolean {
+  if (WHOLE_VEHICLE.test(title)) return false;
+  // "Four-wheel-drive" and "2WD wheels" style phrases describe the vehicle, not a wheel for sale.
+  const rest = withoutQueryTerms(title, termsOf(query)).replace(
+    /\b(?:four|4|two|2|all|front|rear)[- ]wheel[- ]drive\b/gi,
+    " ",
+  );
+  return VEHICLE_PART.test(rest) || FITMENT_YEARS.test(rest);
+}

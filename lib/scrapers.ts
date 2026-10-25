@@ -23,6 +23,8 @@ export interface ListingDraft {
   auction?: AuctionInfo;
   /** Seller reputation, when the site provides it. */
   seller?: SellerInfo;
+  /** The scraper knows this is the thing itself (it came from a vehicles-only search), not a part. */
+  kindHint?: "item";
 }
 
 export interface Origin {
@@ -128,9 +130,11 @@ export async function scrapeCraigslist(
   query: string,
   origin: Origin,
   limit: number = CRAIGSLIST_MAX_RESULTS,
+  /** "sss" = everything for sale; "cta" = the cars & trucks section (vehicles are not in "sss"). */
+  section: "sss" | "cta" = "sss",
 ): Promise<ListingDraft[]> {
   const site = nearestCraigslistSite(origin);
-  const searchUrl = `https://${site.site}.craigslist.org/search/sss?query=${encodeURIComponent(query)}`;
+  const searchUrl = `https://${site.site}.craigslist.org/search/${section}?query=${encodeURIComponent(query)}`;
 
   const response = await fetchWithTimeout(searchUrl, { headers: BROWSER_HEADERS });
   if (!response.ok) throw new Error(`Craigslist search returned ${response.status}`);
@@ -196,6 +200,7 @@ export async function scrapeCraigslist(
         description,
         timestamp,
         url: row.url,
+        ...(section === "cta" ? { kindHint: "item" as const } : {}),
       };
     }),
   );
@@ -275,6 +280,121 @@ export async function scrapeEbay(
   /** Single words the shopper wants left out; sent to eBay as "-word" so slots aren't wasted. */
   exclude: string[] = [],
 ): Promise<ListingDraft[]> {
+  return (await searchEbay({ query, limit, country, exclude })).drafts;
+}
+
+/** One filter eBay can apply to a search, such as Transmission or Platform. */
+export interface EbayFacet {
+  name: string;
+  values: { value: string; count: number }[];
+}
+
+export interface EbaySearchOptions {
+  query: string;
+  limit?: number;
+  country?: string;
+  exclude?: string[];
+  /** eBay category id(s) to search inside, e.g. "6001" for Cars & Trucks. */
+  categoryIds?: string;
+  /** Asks eBay which filters (aspects) apply to these results. */
+  wantFacets?: boolean;
+  /** Item-specific filters to apply, e.g. { Transmission: "Manual" }; needs `aspectCategory`. */
+  aspects?: Record<string, string>;
+  aspectCategory?: string;
+}
+
+export interface EbaySearchResult {
+  drafts: ListingDraft[];
+  facets: EbayFacet[];
+  /** eBay's main category for these results (what `aspects` must be filtered against). */
+  categoryId: string | null;
+  /** How many listings eBay matched in total (not just the page returned). */
+  total: number;
+}
+
+interface EbayRefinement {
+  dominantCategoryId?: string;
+  aspectDistributions?: {
+    localizedAspectName: string;
+    aspectValueDistributions: { localizedAspectValue: string; matchCount: number; refinementHref?: string }[];
+  }[];
+}
+
+const FACET_PRIORITY = [
+  /^platform$/i,
+  /^transmission$/i,
+  /^(model )?year$/i,
+  /^drive type$/i,
+  /^brand$/i,
+  /^type$/i,
+  /^storage capacity$/i,
+  /^(exterior )?colou?r$/i,
+];
+const FACET_MAX_FACETS = 5;
+const FACET_MAX_VALUES = 8;
+
+function toFacets(refinement: EbayRefinement | undefined): EbayFacet[] {
+  const facets: EbayFacet[] = [];
+  for (const aspect of refinement?.aspectDistributions ?? []) {
+    const rank = FACET_PRIORITY.findIndex((pattern) => pattern.test(aspect.localizedAspectName));
+    if (rank < 0) continue;
+    const values = aspect.aspectValueDistributions
+      // Values with these characters can't be sent back in eBay's filter syntax.
+      .filter((entry) => !/[,{}|]/.test(entry.localizedAspectValue))
+      .filter((entry) => !/^(not specified|does not apply|unknown)$/i.test(entry.localizedAspectValue))
+      .map((entry) => ({ value: entry.localizedAspectValue, count: entry.matchCount }));
+    if (values.length === 0) continue;
+    const isYear = /year/i.test(aspect.localizedAspectName);
+    values.sort((a, b) => (isYear ? Number(b.value) - Number(a.value) : b.count - a.count));
+    facets.push({ name: aspect.localizedAspectName, values: values.slice(0, FACET_MAX_VALUES) });
+  }
+  facets.sort(
+    (a, b) =>
+      FACET_PRIORITY.findIndex((pattern) => pattern.test(a.name)) -
+      FACET_PRIORITY.findIndex((pattern) => pattern.test(b.name)),
+  );
+  return facets.slice(0, FACET_MAX_FACETS);
+}
+
+/** The leaf category eBay wants in aspect filters; it is written into each refinement link. */
+function aspectCategoryOf(refinement: EbayRefinement | undefined): string | null {
+  for (const aspect of refinement?.aspectDistributions ?? []) {
+    for (const entry of aspect.aspectValueDistributions) {
+      const match = entry.refinementHref?.match(/categoryId(?:%3A|:)(\d+)/i);
+      if (match) return match[1];
+    }
+  }
+  return refinement?.dominantCategoryId ?? null;
+}
+
+/** The raw aspect lists, used to turn typed words like "manual" into real eBay filters. */
+export async function probeEbayAspects(
+  query: string,
+  categoryIds: string | undefined,
+  country: string,
+): Promise<{ aspects: NonNullable<EbayRefinement["aspectDistributions"]>; categoryId: string | null; total: number }> {
+  const token = await getEbayToken();
+  const filters = ["buyingOptions:{FIXED_PRICE}", `price:[${EBAY_MIN_PRICE}..]`, "priceCurrency:USD"];
+  if (/^[A-Z]{2}$/.test(country)) filters.push(`itemLocationCountry:${country}`);
+  const url =
+    "https://api.ebay.com/buy/browse/v1/item_summary/search" +
+    `?q=${encodeURIComponent(query)}&limit=1&fieldgroups=ASPECT_REFINEMENTS,MATCHING_ITEMS` +
+    (categoryIds ? `&category_ids=${categoryIds}` : "") +
+    `&filter=${encodeURIComponent(filters.join(","))}`;
+  const response = await fetchWithTimeout(url, {
+    headers: { Authorization: `Bearer ${token}`, "X-EBAY-C-MARKETPLACE-ID": "EBAY_US" },
+  });
+  if (!response.ok) throw new Error(`eBay probe returned ${response.status}`);
+  const json = (await response.json()) as { total?: number; refinement?: EbayRefinement };
+  return {
+    aspects: json.refinement?.aspectDistributions ?? [],
+    categoryId: aspectCategoryOf(json.refinement),
+    total: json.total ?? 0,
+  };
+}
+
+export async function searchEbay(options: EbaySearchOptions): Promise<EbaySearchResult> {
+  const { query, limit = 20, country = "", exclude = [], categoryIds, wantFacets, aspects, aspectCategory } = options;
   const token = await getEbayToken();
   // `country` (ISO code) limits results to items located there; empty means anywhere.
   const filters = [
@@ -288,12 +408,26 @@ export async function scrapeEbay(
     "https://api.ebay.com/buy/browse/v1/item_summary/search" +
     // No `sort` = eBay's "Best Match", which puts real guitars first. `sort=newlyListed` returned
     // whatever was uploaded last, which for broad words is pickup rings, straps and stands.
-    `?q=${encodeURIComponent([query, ...exclude.filter((word) => /^[a-z0-9]+$/i.test(word)).map((word) => `-${word}`)].join(" "))}&limit=${limit}&filter=${encodeURIComponent(filters.join(","))}`;
+    `?q=${encodeURIComponent([query, ...exclude.filter((word) => /^[a-z0-9]+$/i.test(word)).map((word) => `-${word}`)].join(" "))}&limit=${limit}&filter=${encodeURIComponent(filters.join(","))}` +
+    (categoryIds ? `&category_ids=${categoryIds}` : "") +
+    (wantFacets ? "&fieldgroups=MATCHING_ITEMS,ASPECT_REFINEMENTS" : "") +
+    (aspects && aspectCategory && Object.keys(aspects).length > 0
+      ? `&aspect_filter=${encodeURIComponent(
+          `categoryId:${aspectCategory},` +
+            Object.entries(aspects)
+              .map(([name, value]) => `${name}:{${value}}`)
+              .join(","),
+        )}`
+      : "");
   const response = await fetchWithTimeout(url, {
     headers: { Authorization: `Bearer ${token}`, "X-EBAY-C-MARKETPLACE-ID": "EBAY_US" },
   });
   if (!response.ok) throw new Error(`eBay search returned ${response.status}`);
-  const json = (await response.json()) as { itemSummaries?: EbaySummary[] };
+  const json = (await response.json()) as {
+    itemSummaries?: EbaySummary[];
+    total?: number;
+    refinement?: EbayRefinement;
+  };
 
   const summaries = json.itemSummaries ?? [];
 
@@ -311,7 +445,7 @@ export async function scrapeEbay(
   // repeatedly. Keep the first; listings sharing a photo at DIFFERENT prices are left alone.
   const seenPhotoPrice = new Set<string>();
 
-  return summaries.flatMap((item): ListingDraft[] => {
+  const drafts = summaries.flatMap((item): ListingDraft[] => {
     const price = item.price ? parsePrice(item.price.value) : null;
     if (price === null || !item.itemWebUrl) return [];
     // eBay can match a word that only appears in the description or a hidden item specific.
@@ -358,7 +492,19 @@ export async function scrapeEbay(
           ? new Date(item.itemCreationDate).toISOString()
           : new Date().toISOString(),
         url: item.itemWebUrl,
+        // Everything in the vehicles category IS a vehicle, never a part.
+        ...(categoryIds === VEHICLES_CATEGORY ? { kindHint: "item" as const } : {}),
       },
     ];
   });
+
+  return {
+    drafts,
+    facets: wantFacets ? toFacets(json.refinement) : [],
+    categoryId: aspectCategoryOf(json.refinement),
+    total: json.total ?? drafts.length,
+  };
 }
+
+/** eBay Motors > Cars & Trucks. */
+export const VEHICLES_CATEGORY = "6001";

@@ -30,6 +30,7 @@ import { BILLING_PORTAL_URL, FREE_MAX_DISTANCE, PLAN_LIMITS, SUPPORT_EMAIL, type
 import { isCountryCode } from "@/lib/countries";
 import { DEFAULT_CATEGORY, isCategoryId } from "@/lib/categories";
 import BrowseBar from "@/components/BrowseBar";
+import ResultFilters from "@/components/ResultFilters";
 import { useLocation } from "@/lib/useLocation";
 import { addRecent, clearRecent, loadPrefs, loadRecent, usePersistPrefs } from "@/lib/usePrefs";
 import { useAccount } from "@/lib/useAccount";
@@ -42,6 +43,7 @@ import {
   type AlertHit,
   type AlertKeyword,
   type Listing,
+  type ResultKind,
   type ScrapeMeta,
   type ScrapeResponse,
   type SortMode,
@@ -84,6 +86,15 @@ export default function DashboardPage() {
   const [category, setCategory] = useState<string>(DEFAULT_CATEGORY.id);
   // Words to leave out ("drill, knife"). Belongs to one search, so it is not remembered.
   const [exclude, setExclude] = useState("");
+  // Items / Parts toggle, and filters picked from the lists under the search box. Both belong to
+  // one search: picked filters are dropped as soon as the words in the box change.
+  const [kind, setKind] = useState<ResultKind>("all");
+  const [pickedFilters, setPickedFilters] = useState<{
+    query: string;
+    aspects: Record<string, string>;
+    category: string;
+    scope: string;
+  } | null>(null);
   const [recent, setRecent] = useState<string[]>([]);
   const [prefsLoaded, setPrefsLoaded] = useState(false);
 
@@ -130,6 +141,10 @@ export default function DashboardPage() {
     country: "",
     category: DEFAULT_CATEGORY.id as string,
     exclude: "",
+    kind: "all" as ResultKind,
+    aspects: {} as Record<string, string>,
+    facetCategory: "",
+    facetScope: "",
     originLat: location?.lat,
     originLng: location?.lng,
   });
@@ -137,8 +152,16 @@ export default function DashboardPage() {
   const previousRef = useRef<{ signature: string; ids: Set<string> } | null>(null);
   const requestSeq = useRef(0);
 
+  // Filters picked from the lists only apply to the search they were picked for.
+  const activePicks =
+    pickedFilters && pickedFilters.query === query.trim().toLowerCase() ? pickedFilters : null;
+
   useEffect(() => {
     paramsRef.current = {
+      kind,
+      aspects: activePicks?.aspects ?? {},
+      facetCategory: activePicks?.category ?? "",
+      facetScope: activePicks?.scope ?? "",
       query,
       maxDistance,
       minScore,
@@ -155,6 +178,8 @@ export default function DashboardPage() {
   }, [
     category,
     exclude,
+    kind,
+    activePicks,
     query,
     maxDistance,
     minScore,
@@ -236,6 +261,10 @@ export default function DashboardPage() {
         country: params.country,
         category: params.category,
         exclude: params.exclude,
+        kind: params.kind,
+        aspects: params.aspects,
+        facetCategory: params.facetCategory,
+        facetScope: params.facetScope,
         originLat: params.originLat,
         originLng: params.originLng,
       });
@@ -328,6 +357,8 @@ export default function DashboardPage() {
     country,
     category,
     exclude,
+    kind,
+    pickedFilters,
     runScrape,
   ]);
 
@@ -413,7 +444,47 @@ export default function DashboardPage() {
 
   const requirePro = useCallback((reason: UpgradeReason) => setUpgradeReason(reason), []);
 
+  // Picking (or clearing) one of eBay's filters under the search box.
+  const pickFacet = useCallback(
+    (name: string, value: string | null) => {
+      if (!meta) return;
+      const base =
+        pickedFilters && pickedFilters.query === meta.query.trim().toLowerCase() ? pickedFilters.aspects : {};
+      const aspects = { ...base };
+      if (value === null) delete aspects[name];
+      else aspects[name] = value;
+      setPickedFilters(
+        Object.keys(aspects).length === 0
+          ? null
+          : {
+              query: meta.query.trim().toLowerCase(),
+              aspects,
+              category: meta.facetCategory ?? "",
+              scope: meta.facetScope,
+            },
+      );
+    },
+    [meta, pickedFilters],
+  );
+
+  // Switching off a filter that was typed ("in manual"): take its words out of the search box.
+  const removePhrase = useCallback(
+    (phrase: string) => {
+      const next = query
+        .replace(new RegExp(`(^|\\s)${phrase.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}(?=\\s|$)`, "i"), " ")
+        .replace(/\s+/g, " ")
+        .trim();
+      paramsRef.current = { ...paramsRef.current, query: next, aspects: {}, facetCategory: "", facetScope: "" };
+      setQuery(next);
+      setPickedFilters(null);
+      void runScrape();
+    },
+    [query, runScrape],
+  );
+
   const resetFilters = useCallback(() => {
+    setKind("all");
+    setPickedFilters(null);
     setMaxDistance(FREE_MAX_DISTANCE);
     setMinScore(1);
     setHideScams(false);
@@ -445,9 +516,15 @@ export default function DashboardPage() {
       minPrice: "",
       maxPrice: "",
       exclude: "",
+      kind: "all",
+      aspects: {},
+      facetCategory: "",
+      facetScope: "",
     };
     setQuery("");
     setExclude("");
+    setKind("all");
+    setPickedFilters(null);
     setCategory(DEFAULT_CATEGORY.id);
     setMinPrice("");
     setMaxPrice("");
@@ -683,6 +760,19 @@ export default function DashboardPage() {
           }}
           meta={meta}
           onPick={pickRecent}
+        />
+
+        <ResultFilters
+          query={query}
+          meta={meta}
+          kind={kind}
+          picked={activePicks?.aspects ?? {}}
+          onKindChange={(next) => {
+            setShowSaved(false);
+            setKind(next);
+          }}
+          onPickFacet={pickFacet}
+          onRemovePhrase={removePhrase}
         />
 
         {alertsOpen && (
