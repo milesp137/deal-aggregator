@@ -2,7 +2,18 @@
 
 import axios from "axios";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { AlertTriangle, BellRing, Flame, PackageSearch, Radar, ShieldAlert, Sparkles, X } from "lucide-react";
+import {
+  AlertTriangle,
+  BellRing,
+  Flame,
+  Heart,
+  PackageSearch,
+  Radar,
+  RotateCcw,
+  ShieldAlert,
+  Sparkles,
+  X,
+} from "lucide-react";
 import AlertPanel from "@/components/AlertPanel";
 import ControlBar from "@/components/ControlBar";
 import ListingCard from "@/components/ListingCard";
@@ -14,15 +25,28 @@ import { api, clearLicense, getLicense, setLicense } from "@/lib/client";
 import { formatPrice, timeAgo } from "@/lib/format";
 import { BILLING_PORTAL_URL, FREE_MAX_DISTANCE, PLAN_LIMITS, SUPPORT_EMAIL, type Plan, type UpgradeReason } from "@/lib/plan";
 import { useLocation } from "@/lib/useLocation";
+import { addRecent, clearRecent, loadPrefs, loadRecent, usePersistPrefs } from "@/lib/usePrefs";
+import { useSaved } from "@/lib/useSaved";
 import {
   ALL_SOURCES,
+  SORT_LABELS,
   type AlertHit,
   type AlertKeyword,
   type Listing,
   type ScrapeMeta,
   type ScrapeResponse,
+  type SortMode,
   type SourcePlatform,
 } from "@/lib/types";
+
+interface SavedPrefs {
+  maxDistance: number;
+  minScore: number;
+  hideScams: boolean;
+  sort: SortMode;
+  minPrice: string;
+  maxPrice: string;
+}
 
 const AUTO_REFRESH_MS = 30_000;
 const FILTER_DEBOUNCE_MS = 350;
@@ -46,6 +70,15 @@ export default function DashboardPage() {
   const [hideScams, setHideScams] = useState(false);
   const [autoRefresh, setAutoRefresh] = useState(false);
   const [sources, setSources] = useState<SourcePlatform[]>(ALL_SOURCES);
+  const [sort, setSort] = useState<SortMode>("best");
+  const [minPrice, setMinPrice] = useState("");
+  const [maxPrice, setMaxPrice] = useState("");
+  const [recent, setRecent] = useState<string[]>([]);
+  const [prefsLoaded, setPrefsLoaded] = useState(false);
+
+  // Saved listings (watchlist) and which view is showing
+  const { saved, isSaved, toggle: toggleSaved, refresh: refreshSaved } = useSaved();
+  const [showSaved, setShowSaved] = useState(false);
 
   // Results
   const [listings, setListings] = useState<Listing[]>([]);
@@ -75,6 +108,9 @@ export default function DashboardPage() {
     maxDistance,
     minScore,
     sources,
+    sort,
+    minPrice,
+    maxPrice,
     originLat: location?.lat,
     originLng: location?.lng,
   });
@@ -88,10 +124,28 @@ export default function DashboardPage() {
       maxDistance,
       minScore,
       sources,
+      sort,
+      minPrice,
+      maxPrice,
       originLat: location?.lat,
       originLng: location?.lng,
     };
-  }, [query, maxDistance, minScore, sources, location?.lat, location?.lng]);
+  }, [query, maxDistance, minScore, sources, sort, minPrice, maxPrice, location?.lat, location?.lng]);
+
+  // Restore the visitor's filters and recent searches from their last visit.
+  useEffect(() => {
+    const prefs = loadPrefs<SavedPrefs>();
+    if (typeof prefs.maxDistance === "number") setMaxDistance(prefs.maxDistance);
+    if (typeof prefs.minScore === "number") setMinScore(prefs.minScore);
+    if (typeof prefs.hideScams === "boolean") setHideScams(prefs.hideScams);
+    if (prefs.sort && prefs.sort in SORT_LABELS) setSort(prefs.sort);
+    if (typeof prefs.minPrice === "string") setMinPrice(prefs.minPrice.replace(/\D/g, "").slice(0, 7));
+    if (typeof prefs.maxPrice === "string") setMaxPrice(prefs.maxPrice.replace(/\D/g, "").slice(0, 7));
+    setRecent(loadRecent());
+    setPrefsLoaded(true);
+  }, []);
+
+  usePersistPrefs({ maxDistance, minScore, hideScams, sort, minPrice, maxPrice }, prefsLoaded);
 
   // Remember which sites the visitor wants between visits.
   useEffect(() => {
@@ -131,12 +185,17 @@ export default function DashboardPage() {
         maxDistance: params.maxDistance,
         minDealScore: params.minScore,
         sources: params.sources,
+        sort: params.sort,
+        minPrice: Number(params.minPrice) || 0,
+        maxPrice: Number(params.maxPrice) || 0,
         originLat: params.originLat,
         originLng: params.originLng,
       });
       if (seq !== requestSeq.current) return; // a newer request superseded this one
 
       setPlan(data.meta.plan);
+      refreshSaved(data.listings);
+      if (params.query.trim()) setRecent(addRecent(params.query));
 
       // Friendly nudge once per session, on the 3rd search, for Free users.
       searchCount.current += 1;
@@ -196,16 +255,29 @@ export default function DashboardPage() {
     } finally {
       if (seq === requestSeq.current) setLoading(false);
     }
-  }, []);
+  }, [refreshSaved]);
 
   // Initial load (once the location is known) + debounced re-scrape whenever a slider or the
   // location changes.
   const hasLocation = location !== null;
   useEffect(() => {
-    if (!hasLocation) return;
+    // Wait for the saved filters to load so the first search already uses them.
+    if (!hasLocation || !prefsLoaded) return;
     const timer = setTimeout(() => void runScrape(), FILTER_DEBOUNCE_MS);
     return () => clearTimeout(timer);
-  }, [hasLocation, location?.lat, location?.lng, maxDistance, minScore, sources, runScrape]);
+  }, [
+    hasLocation,
+    prefsLoaded,
+    location?.lat,
+    location?.lng,
+    maxDistance,
+    minScore,
+    sources,
+    sort,
+    minPrice,
+    maxPrice,
+    runScrape,
+  ]);
 
   // Optional live polling (Pro only).
   useEffect(() => {
@@ -247,6 +319,39 @@ export default function DashboardPage() {
   }, []);
 
   const requirePro = useCallback((reason: UpgradeReason) => setUpgradeReason(reason), []);
+
+  const resetFilters = useCallback(() => {
+    setMaxDistance(FREE_MAX_DISTANCE);
+    setMinScore(1);
+    setHideScams(false);
+    setMinPrice("");
+    setMaxPrice("");
+    setSort("best");
+    changeSources(ALL_SOURCES);
+  }, [changeSources]);
+
+  // Clicking a recent search fills the box and searches right away.
+  const pickRecent = useCallback(
+    (value: string) => {
+      paramsRef.current = { ...paramsRef.current, query: value };
+      setQuery(value);
+      setShowSaved(false);
+      void runScrape();
+    },
+    [runScrape],
+  );
+
+  const clearRecentSearches = useCallback(() => {
+    clearRecent();
+    setRecent([]);
+  }, []);
+
+  const toggleSave = useCallback(
+    (listing: Listing) => {
+      if (toggleSaved(listing, PLAN_LIMITS[plan].maxSaved) === "limit") setUpgradeReason("saved");
+    },
+    [toggleSaved, plan],
+  );
 
   const handleActivated = useCallback(() => {
     setPlan("pro");
@@ -354,6 +459,17 @@ export default function DashboardPage() {
             <span className="rounded-full bg-black/30 px-2 py-0.5 text-xs">{activeAlertCount}</span>
           </button>
 
+          <button
+            type="button"
+            onClick={() => setShowSaved((open) => !open)}
+            aria-pressed={showSaved}
+            className={showSaved ? "btn-primary" : "btn-ghost"}
+          >
+            <Heart className={`h-4 w-4 ${showSaved ? "fill-white" : ""}`} />
+            Saved
+            <span className="rounded-full bg-black/30 px-2 py-0.5 text-xs">{saved.length}</span>
+          </button>
+
           {isPro ? (
             <>
               <span className="inline-flex items-center gap-2 rounded-lg border border-orange-400/50 bg-orange-500/10 px-4 py-2 text-sm font-semibold text-orange-200">
@@ -402,6 +518,18 @@ export default function DashboardPage() {
           onProRequired={requirePro}
           sources={sources}
           onSourcesChange={changeSources}
+          sort={sort}
+          onSortChange={setSort}
+          minPrice={minPrice}
+          maxPrice={maxPrice}
+          onPriceChange={(min, max) => {
+            setMinPrice(min);
+            setMaxPrice(max);
+          }}
+          sourceCounts={meta?.sources ?? null}
+          recent={recent}
+          onPickRecent={pickRecent}
+          onClearRecent={clearRecentSearches}
         />
 
         {alertsOpen && (
@@ -429,7 +557,7 @@ export default function DashboardPage() {
       />
 
       {/* Stats strip */}
-      {meta && (
+      {!showSaved && meta && (
         <div className="mt-6 flex flex-wrap items-center gap-x-6 gap-y-2 text-sm text-zinc-400">
           <span>
             <strong className="text-white">{visibleListings.length}</strong>{" "}
@@ -449,7 +577,7 @@ export default function DashboardPage() {
         </div>
       )}
 
-      {meta && Object.keys(meta.errors ?? {}).length > 0 && (
+      {!showSaved && meta && Object.keys(meta.errors ?? {}).length > 0 && (
         <div
           role="status"
           className="mt-4 space-y-1 rounded-xl border border-yellow-500/50 bg-yellow-950/40 p-3 text-sm text-yellow-200"
@@ -466,16 +594,25 @@ export default function DashboardPage() {
         </div>
       )}
 
-      {error && (
+      {!showSaved && error && (
         <div
           role="alert"
           className="mt-4 flex items-center gap-2 rounded-xl border border-red-500/50 bg-red-950/50 p-3 text-sm text-red-200"
         >
-          <AlertTriangle className="h-4 w-4 shrink-0" /> {error}
+          <AlertTriangle className="h-4 w-4 shrink-0" />
+          <span className="min-w-0 flex-1">{error}</span>
+          <button
+            type="button"
+            onClick={() => void runScrape()}
+            disabled={loading}
+            className="inline-flex shrink-0 items-center gap-1.5 rounded-md border border-red-400/50 px-2.5 py-1 text-xs font-semibold hover:bg-red-500/10 disabled:opacity-50"
+          >
+            <RotateCcw className="h-3.5 w-3.5" /> Try again
+          </button>
         </div>
       )}
 
-      {meta && !isPro && meta.delayedHotCount > 0 && (
+      {!showSaved && meta && !isPro && meta.delayedHotCount > 0 && (
         <button
           type="button"
           onClick={() => setUpgradeReason("fresh")}
@@ -493,7 +630,42 @@ export default function DashboardPage() {
 
       {/* Feed */}
       <main className="mt-4">
-        {initialLoad ? (
+        {showSaved ? (
+          saved.length === 0 ? (
+            <div className="grid place-items-center rounded-2xl border border-dashed border-line py-20 text-center">
+              <Heart className="mb-3 h-10 w-10 text-zinc-600" />
+              <p className="text-lg font-semibold text-zinc-200">Nothing saved yet</p>
+              <p className="mt-1 max-w-sm text-sm text-zinc-500">
+                Tap the heart on any listing to keep it here. Saved listings update whenever they show
+                up in a search, and you&apos;ll see if the price drops.
+              </p>
+              <button type="button" onClick={() => setShowSaved(false)} className="btn-primary mt-5">
+                Back to deals
+              </button>
+            </div>
+          ) : (
+            <>
+              <p className="mb-4 text-sm text-zinc-400">
+                <strong className="text-white">{saved.length}</strong> of {PLAN_LIMITS[plan].maxSaved} saved.
+                Details refresh when a listing appears in a search; sold or removed posts may no longer
+                open.
+              </p>
+              <div className="grid gap-5 sm:grid-cols-2 xl:grid-cols-3">
+                {saved.map((item) => (
+                  <ListingCard
+                    key={item.listing.id}
+                    listing={item.listing}
+                    isNew={false}
+                    matchedAlerts={[]}
+                    saved
+                    onToggleSave={() => toggleSave(item.listing)}
+                    priceDropFrom={item.savedPrice}
+                  />
+                ))}
+              </div>
+            </>
+          )
+        ) : initialLoad ? (
           <div className="grid gap-5 sm:grid-cols-2 xl:grid-cols-3">
             {Array.from({ length: 6 }, (_, i) => (
               <div key={i} className="h-[26rem] animate-pulse rounded-2xl border border-line bg-panel" />
@@ -505,8 +677,12 @@ export default function DashboardPage() {
             <p className="text-lg font-semibold text-zinc-200">No listings match these filters</p>
             <p className="mt-1 max-w-sm text-sm text-zinc-500">
               Try a broader keyword, a larger distance, a lower minimum deal score
-              {sources.length < ALL_SOURCES.length ? ", or turn on more sites under \u201cSearch on\u201d" : ""}.
+              {sources.length < ALL_SOURCES.length ? ", turning on more sites under \u201cSearch on\u201d" : ""}
+              {minPrice || maxPrice ? ", or widening the price range" : ""}.
             </p>
+            <button type="button" onClick={resetFilters} className="btn-ghost mt-5">
+              <RotateCcw className="h-4 w-4" /> Reset filters
+            </button>
           </div>
         ) : (
           <div
@@ -520,12 +696,15 @@ export default function DashboardPage() {
                 listing={listing}
                 isNew={newIds.has(listing.id)}
                 matchedAlerts={matchesByListing.get(listing.id) ?? []}
+                saved={isSaved(listing.id)}
+                onToggleSave={() => toggleSave(listing)}
+                priceDropFrom={saved.find((item) => item.listing.id === listing.id)?.savedPrice}
               />
             ))}
           </div>
         )}
 
-        {meta && !isPro && (
+        {!showSaved && meta && !isPro && (
           <LockedTeaser
             lockedCount={meta.lockedCount}
             delayedCount={meta.delayedCount}

@@ -15,6 +15,8 @@ export interface PlanLimits {
   autoRefresh: boolean;
   /** Desktop notifications when an alert matches. */
   notifications: boolean;
+  /** Most listings a visitor can save to their watchlist. */
+  maxSaved: number;
 }
 
 export const PLAN_LIMITS: Record<Plan, PlanLimits> = {
@@ -25,6 +27,7 @@ export const PLAN_LIMITS: Record<Plan, PlanLimits> = {
     freshDelayMinutes: 15,
     autoRefresh: false,
     notifications: false,
+    maxSaved: 10,
   },
   pro: {
     maxResults: 500,
@@ -33,6 +36,7 @@ export const PLAN_LIMITS: Record<Plan, PlanLimits> = {
     freshDelayMinutes: 0,
     autoRefresh: true,
     notifications: true,
+    maxSaved: 200,
   },
 };
 
@@ -59,7 +63,8 @@ export type UpgradeReason =
   | "live"
   | "distance"
   | "alerts"
-  | "notifications";
+  | "notifications"
+  | "saved";
 
 export const UPGRADE_COPY: Record<UpgradeReason, { title: string; body: string }> = {
   general: {
@@ -90,6 +95,10 @@ export const UPGRADE_COPY: Record<UpgradeReason, { title: string; body: string }
     title: "Get pinged the moment it's posted",
     body: "Desktop notifications for alert matches are a Pro feature.",
   },
+  saved: {
+    title: "Keep every listing you're watching",
+    body: `Free saves up to ${PLAN_LIMITS.free.maxSaved} listings. Pro saves up to ${PLAN_LIMITS.pro.maxSaved}, so you can watch every deal on your list.`,
+  },
 };
 
 export const PRO_PERKS = [
@@ -98,4 +107,5 @@ export const PRO_PERKS = [
   "Live auto-refresh every 30 seconds",
   `Up to ${PLAN_LIMITS.pro.maxAlerts} keyword alerts with desktop notifications`,
   "Search nationwide, not just 100 miles",
+  `Save up to ${PLAN_LIMITS.pro.maxSaved} listings to your watchlist`,
 ];

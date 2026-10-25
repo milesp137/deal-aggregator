@@ -7,7 +7,9 @@ import type {
   ScrapeResponse,
   SourcePlatform,
 } from "@/lib/types";
-import { ALL_SOURCES } from "@/lib/types";
+import { ALL_SOURCES, SORT_LABELS, type ScoreReason, type SortMode } from "@/lib/types";
+
+const SORT_MODES = Object.keys(SORT_LABELS) as SortMode[];
 import {
   getCraigslistHtml,
   getEbayPayload,
@@ -20,10 +22,13 @@ import { scrapeFacebookMarketplace } from "@/lib/facebook";
 import type { Plan } from "@/lib/plan";
 import { limitsFor, planForRequest } from "@/lib/pro";
 import { classifyTitle, MIN_ON_TARGET_TO_HIDE } from "@/lib/relevance";
+import { buildReference, scoreListing, type PriceReference } from "@/lib/scoring";
 import {
   isEbayConfigured,
+  MIN_REAL_PRICE,
   scrapeCraigslist,
   scrapeEbay,
+  titleMatchesQuery,
   type ListingDraft,
 } from "@/lib/scrapers";
 
@@ -222,13 +227,6 @@ function haversineMiles(lat1: number, lng1: number, lat2: number, lng2: number):
   return EARTH_RADIUS_MILES * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
 }
 
-function computeDealScore(price: number, median: number | null): number {
-  if (median === null || median <= 0) return 5;
-  const ratio = price / median;
-  const raw = 10 - (ratio - 0.5) * 10;
-  return Math.min(10, Math.max(1, Math.round(raw)));
-}
-
 interface ScamRule {
   reason: string;
   weight: number;
@@ -272,7 +270,11 @@ const SCAM_TEXT_RULES: ScamRule[] = [
 ];
 
 const SCAM_THRESHOLD = 3;
+/** Against the built-in market table. */
 const SUSPICIOUS_PRICE_RATIO = 0.45;
+/** Against the live search results, which are noisier, so the bar is lower (needs 8+ peers). */
+const SUSPICIOUS_PEER_RATIO = 0.3;
+const MIN_PEERS_FOR_SCAM_CHECK = 8;
 const DUPLICATE_SIMILARITY = 0.85;
 const SCAM_SCORE_CAP = 2;
 
@@ -315,9 +317,16 @@ interface ScamVerdict {
   reasoning: string | null;
 }
 
+/** Reference price for the "suspiciously cheap" check; null skips that check. */
+interface LowPriceCheck {
+  median: number;
+  /** Prices below this fraction of the median are suspicious. */
+  ratio: number;
+}
+
 function scanForScam(
   draft: ListingDraft,
-  median: number | null,
+  lowPrice: LowPriceCheck | null,
   duplicateIds: Set<string>,
 ): ScamVerdict {
   const text = `${draft.title} ${draft.description}`.toLowerCase();
@@ -336,8 +345,8 @@ function scanForScam(
     weight += 2;
   }
 
-  if (median !== null && draft.price / median < SUSPICIOUS_PRICE_RATIO) {
-    const percent = Math.round((draft.price / median) * 100);
+  if (lowPrice && draft.price / lowPrice.median < lowPrice.ratio) {
+    const percent = Math.round((draft.price / lowPrice.median) * 100);
     reasons.push(`Suspiciously low price: only ${percent}% of the typical market price`);
     weight += 3;
   }
@@ -371,9 +380,39 @@ function parseRequest(input: Record<string, unknown>): Required<ScrapeRequest> {
     query: typeof input.query === "string" ? input.query.trim().slice(0, 120) : "",
     maxDistance: clamp(toNumber(input.maxDistance, ANY_DISTANCE), 1, ANY_DISTANCE),
     minDealScore: clamp(Math.round(toNumber(input.minDealScore, 1)), 1, 10),
+    minPrice: clamp(Math.round(toNumber(input.minPrice, 0)), 0, 10_000_000),
+    maxPrice: clamp(Math.round(toNumber(input.maxPrice, 0)), 0, 10_000_000),
+    sort: SORT_MODES.includes(input.sort as SortMode) ? (input.sort as SortMode) : "best",
     originLat: clamp(toNumber(input.originLat, DEFAULT_ORIGIN.lat), -90, 90),
     originLng: clamp(toNumber(input.originLng, DEFAULT_ORIGIN.lng), -180, 180),
   };
+}
+
+/**
+ * Mixes the sites so one source (eBay usually returns the most) can't fill the whole feed.
+ * Input must already be sorted best-first. Within each relevance tier the listings take turns
+ * Marketplace, eBay, Craigslist, each site keeping its own best-first order; a site that runs
+ * out simply drops out of the rotation.
+ */
+function interleaveSources(
+  items: Listing[],
+  tierOf: (listing: Listing) => number,
+): Listing[] {
+  const order: SourcePlatform[] = ["Marketplace", "eBay", "Craigs"];
+  const tiers = [...new Set(items.map(tierOf))].sort((a, b) => a - b);
+  const result: Listing[] = [];
+
+  for (const tier of tiers) {
+    const queues = order.map((platform) =>
+      items.filter((item) => tierOf(item) === tier && item.sourcePlatform === platform),
+    );
+    for (let round = 0; queues.some((queue) => round < queue.length); round++) {
+      for (const queue of queues) {
+        if (round < queue.length) result.push(queue[round]);
+      }
+    }
+  }
+  return result;
 }
 
 async function runScrape(request: Required<ScrapeRequest>, plan: Plan): Promise<ScrapeResponse> {
@@ -483,32 +522,80 @@ async function runScrape(request: Required<ScrapeRequest>, plan: Plan): Promise<
   // 0 = the item itself, 1 = made for it, 2 = junk.
   const relevanceTier = (id: string) => (junkIds.has(id) ? 2 : madeForIds.has(id) ? 1 : 0);
 
+  // Price reference: what comparable listings in THIS search cost right now. A blank search mixes
+  // several topics, so those are compared within their own topic. The market table is the
+  // fallback when a search has too few results to compare.
+  const groupOf = (draft: ListingDraft): string =>
+    request.query
+      ? "query"
+      : (DEFAULT_KEYWORDS.find((keyword) => titleMatchesQuery(draft.title, keyword)) ?? "other");
+  const peerPrices = new Map<string, number[]>();
+  for (const draft of refined) {
+    if (relevanceTier(draft.id) !== 0 || draft.price < MIN_REAL_PRICE) continue;
+    const group = groupOf(draft);
+    if (group === "other") continue;
+    peerPrices.set(group, [...(peerPrices.get(group) ?? []), draft.price]);
+  }
+  const peerReferences = new Map<string, PriceReference | null>();
+  for (const [group, prices] of peerPrices) peerReferences.set(group, buildReference(prices, null));
+
   const enriched: Listing[] = refined.map((draft) => {
-    const market = lookupMarket(draft.title);
-    const median = market?.median ?? null;
-    const verdict = scanForScam(draft, median, duplicateIds);
-    const baseScore = computeDealScore(draft.price, median);
+    const reference =
+      peerReferences.get(groupOf(draft)) ?? buildReference([], lookupMarket(draft.title)?.median ?? null);
+    const lowPrice: LowPriceCheck | null =
+      reference &&
+      (reference.source === "market" || (reference.peerPrices?.length ?? 0) >= MIN_PEERS_FOR_SCAM_CHECK)
+        ? {
+            median: reference.median,
+            ratio: reference.source === "market" ? SUSPICIOUS_PRICE_RATIO : SUSPICIOUS_PEER_RATIO,
+          }
+        : null;
+    const verdict = scanForScam(draft, lowPrice, duplicateIds);
+    const distanceMiles =
+      draft.lat === null || draft.lng === null
+        ? null
+        : Math.round(haversineMiles(request.originLat, request.originLng, draft.lat, draft.lng) * 10) / 10;
+    const scored = scoreListing(
+      {
+        price: draft.price,
+        title: draft.title,
+        description: draft.description,
+        timestamp: draft.timestamp,
+        distanceMiles,
+        imageUrl: draft.imageUrl,
+        relevanceTier: relevanceTier(draft.id),
+        broadSearch: !request.query,
+      },
+      reference,
+      now,
+    );
+    const dealScore = verdict.isScam ? Math.min(scored.score, SCAM_SCORE_CAP) : scored.score;
+    const scoreReasons: ScoreReason[] = verdict.isScam
+      ? [
+          {
+            text: `Capped at ${SCAM_SCORE_CAP} because this listing shows scam warning signs (see above)`,
+            tone: "bad",
+          },
+          ...scored.reasons,
+        ]
+      : scored.reasons;
 
     return {
       id: draft.id,
       title: draft.title,
       price: draft.price,
       location: draft.location,
-      distanceMiles:
-        draft.lat === null || draft.lng === null
-          ? null
-          : Math.round(
-              haversineMiles(request.originLat, request.originLng, draft.lat, draft.lng) * 10,
-            ) / 10,
+      distanceMiles,
       isSample: draft.isSample ?? false,
       imageUrl: draft.imageUrl,
       sourcePlatform: draft.sourcePlatform,
       description: draft.description,
-      dealScore: verdict.isScam ? Math.min(baseScore, SCAM_SCORE_CAP) : baseScore,
+      dealScore,
+      scoreReasons,
       isScam: verdict.isScam,
       scamReasoning: verdict.reasoning,
       timestamp: draft.timestamp,
-      marketMedian: median,
+      marketMedian: reference ? Math.round(reference.median) : null,
       url: draft.url,
     } as Listing;
   });
@@ -523,21 +610,39 @@ async function runScrape(request: Required<ScrapeRequest>, plan: Plan): Promise<
         (maxDistance >= ANY_DISTANCE ||
           listing.distanceMiles === null ||
           listing.distanceMiles <= maxDistance) &&
-        listing.dealScore >= request.minDealScore,
+        listing.dealScore >= request.minDealScore &&
+        (request.minPrice <= 0 || listing.price >= request.minPrice) &&
+        (request.maxPrice <= 0 || listing.price <= request.maxPrice),
     )
-    .sort(
-      (a, b) =>
-        relevanceTier(a.id) - relevanceTier(b.id) ||
-        b.dealScore - a.dealScore ||
-        new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime(),
-    );
+    .sort((a, b) => {
+      // Accessories and junk always sink to the bottom, whatever the sort.
+      const tier = relevanceTier(a.id) - relevanceTier(b.id);
+      if (tier !== 0) return tier;
+      const byScore = b.dealScore - a.dealScore;
+      const byNewest = new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime();
+      switch (request.sort) {
+        case "newest":
+          return byNewest || byScore;
+        case "price_asc":
+          return a.price - b.price || byScore;
+        case "price_desc":
+          return b.price - a.price || byScore;
+        default:
+          return byScore || byNewest;
+      }
+    });
 
   // Free plan: hide listings posted in the last few minutes (Pro sees them instantly).
   const freshCutoff = now - limits.freshDelayMinutes * 60_000;
   const isFresh = (listing: Listing) =>
     limits.freshDelayMinutes > 0 && new Date(listing.timestamp).getTime() > freshCutoff;
   const delayed = matching.filter((listing) => isFresh(listing) && !listing.isScam);
-  const visible = matching.filter((listing) => !isFresh(listing) || listing.isScam);
+  const notDelayed = matching.filter((listing) => !isFresh(listing) || listing.isScam);
+  // Only the default ordering mixes sites; an explicit sort (price, newest...) is respected as is.
+  const visible =
+    request.sort === "best"
+      ? interleaveSources(notDelayed, (listing) => relevanceTier(listing.id))
+      : notDelayed;
 
   const listings = visible.slice(0, limits.maxResults);
 

@@ -37,7 +37,24 @@ export interface Listing {
   url?: string;
   /** True for built-in sample data (not a real post). */
   isSample?: boolean;
+  /** Plain-English breakdown of how dealScore was reached (shown in the card's "Why this score?"). */
+  scoreReasons?: ScoreReason[];
 }
+
+export interface ScoreReason {
+  text: string;
+  tone: "good" | "bad" | "neutral";
+}
+
+export type SortMode = "best" | "deal" | "newest" | "price_asc" | "price_desc";
+
+export const SORT_LABELS: Record<SortMode, string> = {
+  best: "Best match",
+  deal: "Best deal score",
+  newest: "Newest first",
+  price_asc: "Price: low to high",
+  price_desc: "Price: high to low",
+};
 
 /** A power-user rule: "tell me when <keyword> shows up under <maxPrice>". */
 export interface AlertKeyword {
@@ -59,6 +76,10 @@ export interface ScrapeRequest {
   minDealScore: number;
   /** Platforms to search. Omitted or empty means all of them. */
   sources?: SourcePlatform[];
+  /** Price range in USD; 0 means no limit. */
+  minPrice?: number;
+  maxPrice?: number;
+  sort?: SortMode;
   originLat?: number;
   originLng?: number;
 }

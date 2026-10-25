@@ -1,4 +1,17 @@
-import { BellRing, Clock, MapPin, ShieldAlert, Sparkles, TrendingDown, TrendingUp } from "lucide-react";
+"use client";
+
+import { useState, type MouseEvent } from "react";
+import {
+  BellRing,
+  ChevronDown,
+  Clock,
+  Heart,
+  MapPin,
+  ShieldAlert,
+  Sparkles,
+  TrendingDown,
+  TrendingUp,
+} from "lucide-react";
 import type { AlertKeyword, Listing } from "@/lib/types";
 import { PLATFORM_BADGE, formatDistance, formatPrice, scoreTone, timeAgo } from "@/lib/format";
 
@@ -6,11 +19,38 @@ interface ListingCardProps {
   listing: Listing;
   isNew: boolean;
   matchedAlerts: AlertKeyword[];
+  saved: boolean;
+  onToggleSave: () => void;
+  /** Price when the visitor saved it, if the price has since dropped. */
+  priceDropFrom?: number;
 }
 
-export default function ListingCard({ listing, isNew, matchedAlerts }: ListingCardProps) {
+const REASON_STYLE = {
+  good: "text-emerald-300",
+  bad: "text-red-300",
+  neutral: "text-zinc-300",
+} as const;
+
+const REASON_MARK = { good: "+", bad: "\u2212", neutral: "\u2022" } as const;
+
+/** Buttons live inside the card's link, so they must not trigger the navigation. */
+const stop = (event: MouseEvent) => {
+  event.preventDefault();
+  event.stopPropagation();
+};
+
+export default function ListingCard({
+  listing,
+  isNew,
+  matchedAlerts,
+  saved,
+  onToggleSave,
+  priceDropFrom,
+}: ListingCardProps) {
+  const [showWhy, setShowWhy] = useState(false);
   const tone = scoreTone(listing.dealScore);
   const hasAlert = matchedAlerts.length > 0;
+  const reasons = listing.scoreReasons ?? [];
 
   const marketDelta =
     listing.marketMedian !== null
@@ -60,6 +100,20 @@ export default function ListingCard({ listing, isNew, matchedAlerts }: ListingCa
             <span className="text-xs font-semibold opacity-70">/10</span>
           </span>
 
+          <button
+            type="button"
+            aria-label={saved ? "Remove from saved" : "Save listing"}
+            aria-pressed={saved}
+            title={saved ? "Remove from saved" : "Save to watch this listing"}
+            onClick={(event) => {
+              stop(event);
+              onToggleSave();
+            }}
+            className="absolute bottom-3 right-3 grid h-9 w-9 place-items-center rounded-full bg-black/55 backdrop-blur transition hover:bg-black/75 focus:outline-none focus-visible:ring-2 focus-visible:ring-orange-300"
+          >
+            <Heart className={`h-4 w-4 ${saved ? "fill-red-500 text-red-500" : "text-white"}`} />
+          </button>
+
           <div className="absolute bottom-3 left-3 flex gap-2">
             {isNew && (
               <span className="inline-flex items-center gap-1 rounded-md bg-white px-2 py-1 text-[11px] font-bold uppercase text-black">
@@ -87,22 +141,29 @@ export default function ListingCard({ listing, isNew, matchedAlerts }: ListingCa
 
         <div className="flex flex-1 flex-col gap-3 p-4">
           <div className="flex items-end justify-between gap-3">
-            <p className="text-3xl font-extrabold tracking-tight text-white sm:text-4xl">
-              {formatPrice(listing.price)}
-            </p>
+            <div>
+              <p className="text-3xl font-extrabold tracking-tight text-white sm:text-4xl">
+                {formatPrice(listing.price)}
+              </p>
+              {priceDropFrom !== undefined && priceDropFrom > listing.price && (
+                <p className="mt-0.5 text-xs font-semibold text-emerald-400">
+                  Price drop: was {formatPrice(priceDropFrom)} when you saved it
+                </p>
+              )}
+            </div>
             {marketDelta !== null && (
               <p
                 className={`flex shrink-0 items-center gap-1 pb-1 text-xs font-semibold ${
                   marketDelta <= 0 ? "text-emerald-400" : "text-red-400"
                 }`}
-                title={`Market median ${formatPrice(listing.marketMedian ?? 0)}`}
+                title={`Typical price ${formatPrice(listing.marketMedian ?? 0)}`}
               >
                 {marketDelta <= 0 ? (
                   <TrendingDown className="h-3.5 w-3.5" />
                 ) : (
                   <TrendingUp className="h-3.5 w-3.5" />
                 )}
-                {Math.abs(marketDelta)}% {marketDelta <= 0 ? "below" : "above"} market
+                {Math.abs(marketDelta)}% {marketDelta <= 0 ? "below" : "above"} typical
               </p>
             )}
           </div>
@@ -123,7 +184,40 @@ export default function ListingCard({ listing, isNew, matchedAlerts }: ListingCa
             </div>
           )}
 
-          <p className="line-clamp-3 text-sm leading-relaxed text-zinc-400">{listing.description}</p>
+          {listing.description && (
+            <p className="line-clamp-3 text-sm leading-relaxed text-zinc-400">{listing.description}</p>
+          )}
+
+          {reasons.length > 0 && (
+            <div>
+              <button
+                type="button"
+                aria-expanded={showWhy}
+                onClick={(event) => {
+                  stop(event);
+                  setShowWhy((open) => !open);
+                }}
+                className="inline-flex items-center gap-1 text-xs font-semibold text-zinc-400 hover:text-white"
+              >
+                Why {listing.dealScore}/10?
+                <ChevronDown className={`h-3.5 w-3.5 transition ${showWhy ? "rotate-180" : ""}`} />
+              </button>
+              {showWhy && (
+                <ul className="mt-2 space-y-1.5 rounded-lg border border-line bg-canvas/50 p-3 text-xs leading-snug">
+                  {reasons.map((reason, index) => (
+                    <li key={index} className={`flex gap-2 ${REASON_STYLE[reason.tone]}`}>
+                      <span className="w-3 shrink-0 text-center font-bold">{REASON_MARK[reason.tone]}</span>
+                      <span>{reason.text}</span>
+                    </li>
+                  ))}
+                  <li className="border-t border-line pt-1.5 text-zinc-500">
+                    Scores compare each price to similar listings found in this search, then adjust for
+                    condition, freshness and distance.
+                  </li>
+                </ul>
+              )}
+            </div>
+          )}
 
           <div className="mt-auto flex flex-wrap items-center gap-x-4 gap-y-1 border-t border-line pt-3 text-xs text-zinc-400">
             <span className="inline-flex items-center gap-1">

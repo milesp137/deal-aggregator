@@ -3,7 +3,7 @@
 import type { FormEvent } from "react";
 import { Check, Gauge, Lightbulb, Loader2, Lock, MapPin, Radar, RefreshCw, Search, ShieldOff } from "lucide-react";
 import { FREE_MAX_DISTANCE, type UpgradeReason } from "@/lib/plan";
-import { ALL_SOURCES, SOURCE_NAMES, type SourcePlatform } from "@/lib/types";
+import { ALL_SOURCES, SORT_LABELS, SOURCE_NAMES, type SortMode, type SourcePlatform } from "@/lib/types";
 
 export const ANY_DISTANCE = 1500;
 
@@ -25,6 +25,17 @@ interface ControlBarProps {
   /** Platforms currently being searched. */
   sources: SourcePlatform[];
   onSourcesChange: (sources: SourcePlatform[]) => void;
+  sort: SortMode;
+  onSortChange: (sort: SortMode) => void;
+  /** Price range as typed ("" = no limit). */
+  minPrice: string;
+  maxPrice: string;
+  onPriceChange: (minPrice: string, maxPrice: string) => void;
+  /** Listings found per site in the latest search; null before the first result. */
+  sourceCounts: Record<SourcePlatform, number> | null;
+  recent: string[];
+  onPickRecent: (query: string) => void;
+  onClearRecent: () => void;
 }
 
 export default function ControlBar(props: ControlBarProps) {
@@ -45,7 +56,19 @@ export default function ControlBar(props: ControlBarProps) {
     onProRequired,
     sources,
     onSourcesChange,
+    sort,
+    onSortChange,
+    minPrice,
+    maxPrice,
+    onPriceChange,
+    sourceCounts,
+    recent,
+    onPickRecent,
+    onClearRecent,
   } = props;
+
+  /** Digits only, so a stray letter or minus sign can't break the search. */
+  const digits = (value: string) => value.replace(/\D/g, "").slice(0, 7);
 
   const toggleSource = (source: SourcePlatform) => {
     if (sources.includes(source)) {
@@ -150,6 +173,29 @@ export default function ControlBar(props: ControlBarProps) {
         </button>
       </div>
 
+      {recent.length > 0 && !query.trim() && (
+        <div className="mt-3 flex flex-wrap items-center gap-2 text-xs">
+          <span className="font-semibold uppercase tracking-wider text-zinc-500">Recent</span>
+          {recent.map((item) => (
+            <button
+              key={item}
+              type="button"
+              onClick={() => onPickRecent(item)}
+              className="rounded-full border border-line bg-raised px-2.5 py-1 font-semibold text-zinc-300 transition hover:border-zinc-500 hover:text-white"
+            >
+              {item}
+            </button>
+          ))}
+          <button
+            type="button"
+            onClick={onClearRecent}
+            className="text-zinc-500 underline-offset-2 hover:text-zinc-300 hover:underline"
+          >
+            Clear
+          </button>
+        </div>
+      )}
+
       <div className="mt-4 flex flex-wrap items-center gap-2 border-t border-line pt-4 text-sm text-zinc-300">
         <span className="mr-1 text-xs font-semibold uppercase tracking-wider text-zinc-400">Search on</span>
         {ALL_SOURCES.map((source) => {
@@ -169,6 +215,11 @@ export default function ControlBar(props: ControlBarProps) {
             >
               {active ? <Check className="h-3.5 w-3.5" /> : <span className="h-3.5 w-3.5" />}
               {SOURCE_NAMES[source]}
+              {active && sourceCounts && (
+                <span className="rounded-full bg-black/30 px-1.5 text-[10px] tabular-nums">
+                  {sourceCounts[source]}
+                </span>
+              )}
             </button>
           );
         })}
@@ -206,6 +257,42 @@ export default function ControlBar(props: ControlBarProps) {
           />
           <ShieldOff className="h-3.5 w-3.5" />
           Hide suspected scams
+        </label>
+
+        <div className="inline-flex items-center gap-2">
+          <span className="text-xs font-semibold uppercase tracking-wider text-zinc-400">Price</span>
+          <input
+            inputMode="numeric"
+            aria-label="Minimum price"
+            placeholder="Min $"
+            value={minPrice}
+            onChange={(event) => onPriceChange(digits(event.target.value), maxPrice)}
+            className="field !w-24 !py-1.5 text-sm"
+          />
+          <span className="text-zinc-500">to</span>
+          <input
+            inputMode="numeric"
+            aria-label="Maximum price"
+            placeholder="Max $"
+            value={maxPrice}
+            onChange={(event) => onPriceChange(minPrice, digits(event.target.value))}
+            className="field !w-24 !py-1.5 text-sm"
+          />
+        </div>
+
+        <label className="inline-flex items-center gap-2 sm:ml-auto">
+          <span className="text-xs font-semibold uppercase tracking-wider text-zinc-400">Sort</span>
+          <select
+            value={sort}
+            onChange={(event) => onSortChange(event.target.value as SortMode)}
+            className="field !w-auto !py-1.5 text-sm"
+          >
+            {(Object.keys(SORT_LABELS) as SortMode[]).map((mode) => (
+              <option key={mode} value={mode}>
+                {SORT_LABELS[mode]}
+              </option>
+            ))}
+          </select>
         </label>
       </div>
     </form>
