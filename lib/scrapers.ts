@@ -69,7 +69,9 @@ export function titleMatchesQuery(title: string, query: string): boolean {
     // Anything with letters must START a word, so "ps5" no longer matches "FPS575".
     // One optional space or dash between characters keeps "240 SX" / "MX-5" working.
     // Not for 3-letter codes, or "ps5" would match the guitar pedal "Boss PS-5".
-    const pattern = term.split("").join(term.length > 3 ? "[ -]?" : "");
+    // Car codes ("rx7" = "RX-7", "gtr" = "GT-R") are the exception: they are written both ways.
+    const looseCode = term.length > 3 || (term.length === 3 && !/^(ps\d|xb\d|wii)$/.test(term));
+    const pattern = term.split("").join(looseCode ? "[ -]?" : "");
     // Short model codes ("ps5", "s14") must also END the word, so "ps5" skips "PS59C turntable".
     const end = term.length <= 3 ? "(?![a-z0-9])" : "";
     return new RegExp(`(?:^|[^a-z0-9])${pattern}${end}`).test(lower);
@@ -332,6 +334,7 @@ const FACET_PRIORITY = [
 ];
 const FACET_MAX_FACETS = 5;
 const FACET_MAX_VALUES = 8;
+const FACET_MAX_YEARS = 70;
 
 function toFacets(refinement: EbayRefinement | undefined): EbayFacet[] {
   const facets: EbayFacet[] = [];
@@ -345,8 +348,21 @@ function toFacets(refinement: EbayRefinement | undefined): EbayFacet[] {
       .map((entry) => ({ value: entry.localizedAspectValue, count: entry.matchCount }));
     if (values.length === 0) continue;
     const isYear = /year/i.test(aspect.localizedAspectName);
+    // Sellers sometimes type nonsense years ("1900"); keep plausible ones only.
+    if (isYear) {
+      const limit = new Date().getFullYear() + 2;
+      for (let i = values.length - 1; i >= 0; i--) {
+        const year = Number(values[i].value);
+        if (!(year >= 1920 && year <= limit)) values.splice(i, 1);
+      }
+      if (values.length === 0) continue;
+    }
     values.sort((a, b) => (isYear ? Number(b.value) - Number(a.value) : b.count - a.count));
-    facets.push({ name: aspect.localizedAspectName, values: values.slice(0, FACET_MAX_VALUES) });
+    // Every year is kept (oldest cars included); other filters show their most common values.
+    facets.push({
+      name: aspect.localizedAspectName,
+      values: values.slice(0, isYear ? FACET_MAX_YEARS : FACET_MAX_VALUES),
+    });
   }
   facets.sort(
     (a, b) =>

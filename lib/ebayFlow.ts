@@ -69,6 +69,9 @@ export async function resolveTypedFilters(query: string, country: string): Promi
   return null;
 }
 
+/** Cars & trucks matches needed before a search counts as a vehicle search. */
+const VEHICLE_SEARCH_MIN_CARS = 3;
+
 export interface EbayFlowInput {
   query: string;
   limit: number;
@@ -82,6 +85,8 @@ export interface EbayFlowInput {
 
 export interface EbayFlowOutput {
   drafts: ListingDraft[];
+  /** True when this looks like a search for a car/truck (so parts and toy models are not "the item"). */
+  vehicleSearch: boolean;
   facets: EbayFacet[];
   /** Category the returned facets belong to; sent back when the shopper picks one. */
   facetScope: string;
@@ -118,7 +123,16 @@ export async function ebayFlow(input: EbayFlowInput): Promise<EbayFlowOutput> {
     throw (settled.find((entry) => entry.status === "rejected") as PromiseRejectedResult).reason;
   }
 
-  const drafts = results.flatMap((entry) => entry?.drafts ?? []);
+  // The same car can come back from both searches, or be listed twice by one seller.
+  const seen = new Set<string>();
+  const drafts = results
+    .flatMap((entry) => entry?.drafts ?? [])
+    .filter((draft) => {
+      const keys = [draft.id, `${draft.title}|${draft.price}|${draft.seller?.name ?? ""}`.toLowerCase()];
+      if (keys.some((key) => seen.has(key))) return false;
+      keys.forEach((key) => seen.add(key));
+      return true;
+    });
 
   // Facets describe the cars when there are plenty of them, otherwise the general results.
   let facetIndex = 0;
@@ -127,8 +141,15 @@ export async function ebayFlow(input: EbayFlowInput): Promise<EbayFlowOutput> {
     facetIndex = cars && cars.total >= 15 && cars.facets.length > 0 ? 0 : 1;
   }
   const chosen = results[facetIndex] ?? results.find((entry) => entry !== null) ?? null;
+  // The search is for a car or truck when eBay's cars & trucks category has real matches for it
+  // (or when the shopper filtered inside that category).
+  const vehicleSearch = hasAspects
+    ? input.scope === VEHICLES_CATEGORY
+    : (results[0]?.total ?? 0) >= VEHICLE_SEARCH_MIN_CARS;
+
   return {
     drafts,
+    vehicleSearch,
     facets: chosen?.facets ?? [],
     facetScope: calls[facetIndex]?.scope ?? "",
     facetCategory: chosen?.categoryId ?? null,

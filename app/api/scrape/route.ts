@@ -287,6 +287,10 @@ const SCAM_TEXT_RULES: ScamRule[] = [
 
 const SCAM_THRESHOLD = 3;
 /** Against the built-in market table. */
+const TITLE_YEAR = /\b(?:19[2-9]\d|20[0-3]\d)\b/;
+/** Cars within this many model years count as comparable, and at least this many are needed. */
+const CAR_YEAR_WINDOW = 5;
+const MIN_CAR_PEERS = 5;
 const SUSPICIOUS_PRICE_RATIO = 0.45;
 /** Against the live search results, which are noisier, so the bar is lower (needs 8+ peers). */
 const SUSPICIOUS_PEER_RATIO = 0.3;
@@ -513,7 +517,8 @@ async function runScrape(typed: Required<ScrapeRequest>, plan: Plan): Promise<Sc
   // the other sites; filters picked from the list leave those sites out.
   const pickedFilters = pickedAspects && aspectsActive;
   const textFilters = resolved ? [...resolved.applied.map((entry) => entry.filter), ...noMatchFilters] : [];
-  let ebayExtra: { facets: Facet[]; facetScope: string; facetCategory: string | null } = {
+  let ebayExtra: { facets: Facet[]; facetScope: string; facetCategory: string | null; vehicleSearch: boolean } = {
+    vehicleSearch: false,
     facets: [],
     facetScope: "",
     facetCategory: null,
@@ -717,7 +722,13 @@ async function runScrape(typed: Required<ScrapeRequest>, plan: Plan): Promise<Sc
     const kind = classifyTitle(draft.title, topic);
     if (kind === "junk") junkIds.add(draft.id);
     else if (kind === "made-for" && (request.query || category.demoteMadeFor)) madeForIds.add(draft.id);
-    else if (isVehicleQuery(topic) && !isPartQuery(topic) && looksLikeVehiclePart(draft.title, topic)) {
+    else if (
+      (ebayExtra.vehicleSearch || isVehicleQuery(topic)) &&
+      !isPartQuery(topic) &&
+      (looksLikeVehiclePart(draft.title, topic) ||
+        // On eBay a real car's title names its year; "R34 Skyline GTR key" or "RX7 hood" does not.
+        draft.sourcePlatform === "eBay" && !TITLE_YEAR.test(draft.title))
+    ) {
       partIds.add(draft.id);
     }
   }
@@ -778,10 +789,36 @@ async function runScrape(typed: Required<ScrapeRequest>, plan: Plan): Promise<Sc
   // A big pool of results with no close matches is a mixed bag, so its median means little.
   const ROUGH_POOL_SIZE = 15;
 
+  // Cars: a 1979 and a 2001 of the same model are different markets, so each car is compared with
+  // cars of nearly the same year, or not compared at all when there are too few of them.
+  const vehicleMode =
+    request.query !== "" && !isPartQuery(request.query) && (ebayExtra.vehicleSearch || isVehicleQuery(request.query));
+  const yearOf = (title: string) => {
+    const found = title.match(TITLE_YEAR);
+    return found ? Number(found[0]) : null;
+  };
+  const carsByYear = vehicleMode
+    ? refined
+        .filter((draft) => !draft.auction && relevanceTier(draft.id) === 0 && draft.price >= MIN_REAL_PRICE)
+        .flatMap((draft) => {
+          const year = yearOf(draft.title);
+          return year === null ? [] : [{ id: draft.id, year, price: draft.price }];
+        })
+    : [];
+
   const enriched: Listing[] = refined.map((draft) => {
     // Auctions are not compared to anything: there is no typical price for a current bid.
     let reference: PriceReference | null = null;
-    if (!draft.auction) {
+    const carYear = vehicleMode ? yearOf(draft.title) : null;
+    if (vehicleMode && !draft.auction) {
+      const peers = carsByYear
+        .filter((car) => car.id !== draft.id && carYear !== null && Math.abs(car.year - carYear) <= CAR_YEAR_WINDOW)
+        .map((car) => car.price);
+      reference =
+        peers.length >= MIN_CAR_PEERS
+          ? { ...buildReference(peers, null)!, basis: "similar" }
+          : buildReference([], lookupMarket(draft.title)?.median ?? null);
+    } else if (!draft.auction) {
       const near = similarMap.get(draft.id);
       const nearReference = near ? buildReference(near, null) : null;
       const groupReference = peerReferences.get(groupOf(draft)) ?? null;

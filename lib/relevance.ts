@@ -228,6 +228,12 @@ const VEHICLE_WORDS = [
   "skyline", "240sx", "300zx", "350z", "370z", "wrx", "sti", "evo", "lancer", "tacoma", "tundra", "f-?150",
   "silverado", "sierra", "truck", "pickup truck", "suv", "sedan", "coupe", "hatchback", "wagon", "minivan",
   "car", "cars", "motorcycle",
+  "rx-?[78]", "gt-?r", "gtr", "r3[2-4]", "s1[3-5]", "fd3s", "fc3s", "ae86", "nsx", "mr2", "celica", "integra",
+  "prelude", "s2000", "z28", "firebird", "trans am", "4runner", "land cruiser",
+  "e30", "e36", "e46", "gti", "impreza", "forester", "rav4",
+  "crv", "cr-v", "pathfinder", "maxima", "altima", "sentra", "stanza", "280z",
+  "260z", "pantera", "gt500", "gt350", "ferrari", "lamborghini",
+  "maserati", "bentley", "rolls royce", "aston martin", "mclaren", "bugatti",
 ];
 const VEHICLE_QUERY = new RegExp(`\\b(?:${VEHICLE_WORDS.join("|")})\\b`, "i");
 
@@ -254,6 +260,9 @@ const VEHICLE_PART_TERMS = [
   "carpets?", "floor mats?", "headliners?", "sun ?visors?", "door panels?", "arm ?rests?", "emblems?",
   "badges?", "key fobs?", "fobs?", "wipers?", "hoses?", "belts?", "filters?", "gas caps?", "brackets?",
   "moldings?", "weather ?strip(?:ping)?", "latch(?:es)?", "handles?", "hinges?", "linkages?",
+  "camber arms?", "glass", "trim", "clusters?", "stereo", "gauges?", "vents?", "sun ?roofs?", "moon ?roofs?",
+  "soft tops?", "convertible tops?", "cup ?holders?", "intercoolers?", "braces?", "ring (?:and )?pinion",
+  "final drive", "gears?", "kits?", "weatherstrip", "rods?", "pods?", "caliper", "stickers?",
   "oem", "aftermarket", "replacement", "fitment", "compatible", "part numbers?",
   // "fits 1997-2001 Jeep": a model-year range is how parts advertise what they fit
   "fits?",
@@ -264,8 +273,20 @@ const FITMENT_YEARS = /\b(?:19|20)\d{2}\s?[-–to]+\s?(?:(?:19|20)\d{2}|\d{2})\b
 const WHOLE_VEHICLE =
   /\b\d{2,3}(?:,\d{3})?\s?k?\s?(?:miles|mi)\b|\bvin\b|\bclean title\b|\bsalvage title\b|\bruns (?:and|&) drives\b|\bone owner\b|\b\d\.\dl\b.*\b(?:4x4|awd|4wd|fwd|rwd)\b/i;
 
-/** True when the search itself names a part ("coilovers", "te37 wheels"): then parts are the item. */
-export const isPartQuery = (query: string) => VEHICLE_PART.test(query);
+/** Scale models, toys and memorabilia: they carry the name of a car but are not one. */
+const MODEL_OR_TOY = new RegExp(
+  [
+    "\\b1\\s?[:/]\\s?(?:8|10|12|14|16|18|20|24|25|32|36|38|43|50|55|64|87|144)\\b",
+    "\\b(?:die[- ]?cast|scale models?|model (?:cars?|kits?)|models? kit|hot ?wheels|matchbox|mini ?gt|inno ?64)\\b",
+    "\\b(?:kaido|tomica|majorette|greenlight|jada|tarmac|auto ?art|maisto|bburago|welly|revell|tamiya)\\b",
+    "\\b(?:aoshima|hasegawa|fujimi|lego|rc cars?|r/c|remote control|toys?|figurines?|pedal car|slot car)\\b",
+    "\\b(?:posters?|brochures?|catalogs?|keychains?|key ?rings?|stickers?|decals?|t-?shirts?|puzzles?|prints?)\\b",
+  ].join("|"),
+  "i",
+);
+
+/** True when the search itself names a part or a model ("coilovers", "te37 wheels", "hot wheels r34"). */
+export const isPartQuery = (query: string) => VEHICLE_PART.test(query) || MODEL_OR_TOY.test(query);
 
 /**
  * For vehicle searches: does this title read like a component or accessory rather than a whole
@@ -273,6 +294,7 @@ export const isPartQuery = (query: string) => VEHICLE_PART.test(query);
  * vehicle searches that aren't themselves searching for a part).
  */
 export function looksLikeVehiclePart(title: string, query: string): boolean {
+  if (MODEL_OR_TOY.test(withoutQueryTerms(title, termsOf(query)))) return true;
   if (WHOLE_VEHICLE.test(title)) return false;
   // "Four-wheel-drive" and "2WD wheels" style phrases describe the vehicle, not a wheel for sale.
   const rest = withoutQueryTerms(title, termsOf(query)).replace(

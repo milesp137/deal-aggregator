@@ -20,8 +20,11 @@ interface ResultFiltersProps {
 const KINDS: { id: ResultKind; label: string }[] = [
   { id: "all", label: "Everything" },
   { id: "items", label: "The item itself" },
-  { id: "parts", label: "Parts & accessories" },
+  { id: "parts", label: "Parts, models & accessories" },
 ];
+
+/** Filters with more choices than this become a menu instead of chips. */
+const LONG_LIST = 10;
 
 const chip =
   "inline-flex items-center gap-1.5 rounded-full border px-3 py-1 text-xs font-semibold transition focus:outline-none focus-visible:ring-2 focus-visible:ring-orange-300";
@@ -132,7 +135,24 @@ export default function ResultFilters({
           <span className="mr-1 min-w-[5.5rem] text-xs font-semibold uppercase tracking-wider text-zinc-400">
             {facet.name}
           </span>
-          {facet.values.map((item) => {
+          {facet.values.length > LONG_LIST ? (
+            // Years of a car run back decades: a menu beats forty chips.
+            <select
+              aria-label={facet.name}
+              value={picked[facet.name] ?? ""}
+              onChange={(event) => onPickFacet(facet.name, event.target.value || null)}
+              className="rounded-full border border-line bg-raised px-3 py-1 text-xs font-semibold text-zinc-200 focus:outline-none focus-visible:ring-2 focus-visible:ring-orange-300"
+            >
+              <option value="">Any ({facet.values.length} to choose from)</option>
+              {facet.values.map((item) => (
+                <option key={item.value} value={item.value}>
+                  {item.value}
+                  {item.count > 0 ? ` (${item.count})` : ""}
+                </option>
+              ))}
+            </select>
+          ) : (
+            facet.values.map((item) => {
             const active = activeAspects?.[facet.name] === item.value;
             return (
               <button
@@ -155,7 +175,8 @@ export default function ResultFilters({
                 )}
               </button>
             );
-          })}
+            })
+          )}
         </div>
       ))}
 
