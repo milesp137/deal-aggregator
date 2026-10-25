@@ -1,3 +1,4 @@
+import { timingSafeEqual } from "crypto";
 import { NextResponse } from "next/server";
 import * as cheerio from "cheerio";
 import type {
@@ -679,6 +680,18 @@ async function runScrape(request: Required<ScrapeRequest>, plan: Plan): Promise<
   return { listings, meta };
 }
 
+/**
+ * The alert-email job calls this route for each user and has to search as that user's plan
+ * (Free is delayed, Pro is instant). Only a caller holding CRON_SECRET may pick the plan.
+ */
+function internalPlan(req: Request): Plan | null {
+  const secret = process.env.CRON_SECRET;
+  const given = req.headers.get("x-internal-secret");
+  if (!secret || !given || given.length !== secret.length) return null;
+  if (!timingSafeEqual(Buffer.from(given), Buffer.from(secret))) return null;
+  return req.headers.get("x-internal-plan") === "pro" ? "pro" : "free";
+}
+
 export async function POST(req: Request) {
   let body: unknown;
   try {
@@ -688,7 +701,7 @@ export async function POST(req: Request) {
   }
   const result = await runScrape(
     parseRequest(body as Record<string, unknown>),
-    await planForRequest(req),
+    internalPlan(req) ?? (await planForRequest(req)),
   );
   return NextResponse.json(result, { headers: { "Cache-Control": "no-store" } });
 }

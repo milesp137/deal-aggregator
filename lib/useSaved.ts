@@ -1,9 +1,12 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
+import { api } from "./client";
 import type { Listing } from "./types";
 
 const STORAGE_KEY = "dealradar:saved";
+const MAX_SYNCED = 200;
+const SYNC_DEBOUNCE_MS = 800;
 
 export interface SavedListing {
   listing: Listing;
@@ -38,13 +41,62 @@ function write(items: SavedListing[]): void {
   }
 }
 
-/** A per-browser watchlist. Stored locally, so it needs no account. */
-export function useSaved() {
+/** Union by listing id. The device's copy wins for listing details, the older save keeps its date and price. */
+function merge(local: SavedListing[], remote: SavedListing[]): SavedListing[] {
+  const byId = new Map<string, SavedListing>();
+  for (const item of remote) byId.set(item.listing.id, item);
+  for (const item of local) {
+    const existing = byId.get(item.listing.id);
+    byId.set(
+      item.listing.id,
+      existing && existing.savedAt < item.savedAt
+        ? { ...item, savedAt: existing.savedAt, savedPrice: existing.savedPrice }
+        : item,
+    );
+  }
+  return [...byId.values()].sort((a, b) => b.savedAt.localeCompare(a.savedAt)).slice(0, MAX_SYNCED);
+}
+
+/**
+ * A watchlist kept in this browser. When `email` is set (signed in) it is also synced to the
+ * account so it follows the user to other devices.
+ */
+export function useSaved(email: string | null) {
   const [saved, setSaved] = useState<SavedListing[]>([]);
+  const synced = useRef(false);
 
   useEffect(() => {
     setSaved(read());
   }, []);
+
+  // On sign-in, merge what the account already has with what this browser has saved.
+  useEffect(() => {
+    synced.current = false;
+    if (!email) return;
+    let cancelled = false;
+    api
+      .get<{ saved: SavedListing[] }>("/api/saved")
+      .then(({ data }) => {
+        if (cancelled) return;
+        const merged = merge(read(), Array.isArray(data.saved) ? data.saved : []);
+        write(merged);
+        synced.current = true;
+        setSaved(merged);
+      })
+      .catch(() => undefined); // leave syncing off; the local list keeps working
+    return () => {
+      cancelled = true;
+    };
+  }, [email]);
+
+  // Push changes to the account shortly after they happen.
+  useEffect(() => {
+    if (!email || !synced.current) return;
+    const timer = setTimeout(() => {
+      api.put("/api/saved", { saved: saved.slice(0, MAX_SYNCED) }).catch(() => undefined);
+    }, SYNC_DEBOUNCE_MS);
+    return () => clearTimeout(timer);
+  }, [saved, email]);
 
   const isSaved = useCallback((id: string) => saved.some((item) => item.listing.id === id), [saved]);
 

@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
-import { createAlert, deleteAlert, listAlerts, updateAlert } from "@/lib/db";
+import { getSessionEmail } from "@/lib/auth";
+import { accountOwner, createAlert, deleteAlert, listAlerts, updateAlert } from "@/lib/db";
 import { PLAN_LIMITS } from "@/lib/plan";
 import { planForRequest } from "@/lib/pro";
 
@@ -8,8 +9,13 @@ export const dynamic = "force-dynamic";
 
 const OWNER_PATTERN = /^[A-Za-z0-9-]{8,64}$/;
 
-/** Each browser sends an anonymous id so alert lists are private per visitor. */
-function ownerOf(req: Request): string | null {
+/**
+ * Signed-in visitors own their alerts through their account (so they follow them across
+ * devices and can be emailed); everyone else gets a private list per browser via an anonymous id.
+ */
+async function ownerOf(req: Request): Promise<string | null> {
+  const email = await getSessionEmail(req);
+  if (email) return accountOwner(email);
   const id = req.headers.get("x-client-id") ?? "";
   return OWNER_PATTERN.test(id) ? id : null;
 }
@@ -17,7 +23,7 @@ function ownerOf(req: Request): string | null {
 const missingOwner = () => NextResponse.json({ error: "Missing client id" }, { status: 400 });
 
 export async function GET(req: Request) {
-  const owner = ownerOf(req);
+  const owner = await ownerOf(req);
   if (!owner) return missingOwner();
   try {
     return NextResponse.json({ alerts: await listAlerts(owner) });
@@ -27,7 +33,7 @@ export async function GET(req: Request) {
 }
 
 export async function POST(req: Request) {
-  const owner = ownerOf(req);
+  const owner = await ownerOf(req);
   if (!owner) return missingOwner();
   try {
     const body = await req.json();
@@ -65,7 +71,7 @@ export async function POST(req: Request) {
 }
 
 export async function PATCH(req: Request) {
-  const owner = ownerOf(req);
+  const owner = await ownerOf(req);
   if (!owner) return missingOwner();
   try {
     const { id, enabled } = await req.json();
@@ -78,7 +84,7 @@ export async function PATCH(req: Request) {
 }
 
 export async function DELETE(req: Request) {
-  const owner = ownerOf(req);
+  const owner = await ownerOf(req);
   if (!owner) return missingOwner();
   try {
     const id = new URL(req.url).searchParams.get("id");

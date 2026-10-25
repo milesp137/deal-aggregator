@@ -11,6 +11,9 @@ import type { AlertKeyword } from "./types";
 
 const redisKey = (ownerId: string) => `dealradar:alerts:${ownerId}`;
 
+/** Owner id for a signed-in account. Browser ids never contain ":", so the two can't collide. */
+export const accountOwner = (email: string) => `user:${email.trim().toLowerCase()}`;
+
 // In-memory fallback; kept on globalThis so dev hot-reloads don't reset it.
 const globalStore = globalThis as unknown as { __dealradarAlerts?: Map<string, AlertKeyword[]> };
 

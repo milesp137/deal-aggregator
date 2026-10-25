@@ -7,13 +7,16 @@ import {
   BellRing,
   Flame,
   Heart,
+  Mail,
   PackageSearch,
   RotateCcw,
   ShieldAlert,
   Sparkles,
   X,
 } from "lucide-react";
+import AccountMenu from "@/components/AccountMenu";
 import AlertPanel from "@/components/AlertPanel";
+import SignInModal from "@/components/SignInModal";
 import ControlBar from "@/components/ControlBar";
 import ListingCard from "@/components/ListingCard";
 import LocationBar from "@/components/LocationBar";
@@ -27,6 +30,7 @@ import { BILLING_PORTAL_URL, FREE_MAX_DISTANCE, PLAN_LIMITS, SUPPORT_EMAIL, type
 import { isCountryCode } from "@/lib/countries";
 import { useLocation } from "@/lib/useLocation";
 import { addRecent, clearRecent, loadPrefs, loadRecent, usePersistPrefs } from "@/lib/usePrefs";
+import { useAccount } from "@/lib/useAccount";
 import { useSaved } from "@/lib/useSaved";
 import {
   ALL_SOURCES,
@@ -81,8 +85,13 @@ export default function DashboardPage() {
   const [recent, setRecent] = useState<string[]>([]);
   const [prefsLoaded, setPrefsLoaded] = useState(false);
 
+  // Account (email sign-in). Anonymous visitors work exactly as before.
+  const { account, loaded: accountLoaded, updatePrefs, signOut } = useAccount();
+  const accountEmail = account?.email ?? null;
+  const [signInOpen, setSignInOpen] = useState(false);
+
   // Saved listings (watchlist) and which view is showing
-  const { saved, isSaved, toggle: toggleSaved, refresh: refreshSaved } = useSaved();
+  const { saved, isSaved, toggle: toggleSaved, refresh: refreshSaved } = useSaved(accountEmail);
   const [showSaved, setShowSaved] = useState(false);
 
   // Results
@@ -313,12 +322,52 @@ export default function DashboardPage() {
     return () => clearInterval(timer);
   }, [autoRefresh, isPro, runScrape]);
 
-  // Load saved alert rules + browser notification state, and re-check a stored Pro license.
+  // Load the alert rules once we know who is browsing. Signing in first moves any alerts this
+  // browser created anonymously into the account.
   useEffect(() => {
-    api
-      .get<{ alerts: AlertKeyword[] }>("/api/alerts")
-      .then(({ data }) => setAlerts(data.alerts))
-      .catch(() => setError("Could not load alert rules."));
+    if (!accountLoaded) return;
+    let cancelled = false;
+    void (async () => {
+      if (accountEmail) {
+        try {
+          await api.post("/api/alerts/migrate", {});
+        } catch {
+          /* the account's own alerts still load below */
+        }
+      }
+      try {
+        const { data } = await api.get<{ alerts: AlertKeyword[] }>("/api/alerts");
+        if (!cancelled) setAlerts(data.alerts);
+      } catch {
+        if (!cancelled) setError("Could not load alert rules.");
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [accountLoaded, accountEmail]);
+
+  // Signed-in Pro accounts are Pro on every device.
+  useEffect(() => {
+    if (account?.plan === "pro") setPlan("pro");
+  }, [account?.plan]);
+
+  // Remember where a signed-in user searches so their alert emails use the same area.
+  const locationLat = location?.lat;
+  const locationLng = location?.lng;
+  const locationLabel = location?.label;
+  useEffect(() => {
+    if (!accountEmail || locationLat === undefined || locationLng === undefined) return;
+    const timer = setTimeout(() => {
+      api
+        .post("/api/account/prefs", { location: { lat: locationLat, lng: locationLng, label: locationLabel ?? "" } })
+        .catch(() => undefined);
+    }, 1500);
+    return () => clearTimeout(timer);
+  }, [accountEmail, locationLat, locationLng, locationLabel]);
+
+  // Browser notification state, and re-check a stored Pro license.
+  useEffect(() => {
     setNotificationPermission("Notification" in window ? Notification.permission : "unsupported");
 
     // One-click activation from the license email: /#license=KEY (the fragment never hits servers).
@@ -368,6 +417,16 @@ export default function DashboardPage() {
     },
     [runScrape],
   );
+
+  // Logo click: back to the default home view (blank search, results feed), scrolled to the top.
+  const goHome = useCallback(() => {
+    paramsRef.current = { ...paramsRef.current, query: "" };
+    setQuery("");
+    setShowSaved(false);
+    setAlertsOpen(false);
+    window.scrollTo({ top: 0, behavior: "smooth" });
+    void runScrape();
+  }, [runScrape]);
 
   const clearRecentSearches = useCallback(() => {
     clearRecent();
@@ -449,7 +508,18 @@ export default function DashboardPage() {
     <div className="mx-auto min-h-screen max-w-7xl px-4 pb-16 pt-6 sm:px-6 lg:px-8">
       {/* Header */}
       <header className="mb-6 flex flex-wrap items-center justify-between gap-4">
-        <div className="flex items-center gap-3">
+        {/* Logo + name + tagline: one click target that returns to the home view. */}
+        <a
+          href="/"
+          onClick={(event) => {
+            // Let ctrl/cmd/middle-click open a new tab normally; otherwise reset in place.
+            if (event.metaKey || event.ctrlKey || event.shiftKey || event.button !== 0) return;
+            event.preventDefault();
+            goHome();
+          }}
+          aria-label="DealRadar home"
+          className="flex items-center gap-3 rounded-xl no-underline focus:outline-none focus-visible:ring-2 focus-visible:ring-orange-300"
+        >
           <Logo className="h-11 w-11 rounded-xl shadow-glow" />
           <div>
             <h1 className="text-2xl font-extrabold tracking-tight text-white">DealRadar</h1>
@@ -457,7 +527,7 @@ export default function DashboardPage() {
               Project cars, performance parts &amp; high-end electronics, scored in real time
             </p>
           </div>
-        </div>
+        </a>
 
         <div className="flex items-center gap-3">
           <span className="hidden items-center gap-2 text-xs font-semibold uppercase tracking-wider text-zinc-400 sm:inline-flex">
@@ -523,6 +593,16 @@ export default function DashboardPage() {
               Go Pro
             </button>
           )}
+
+          {account ? (
+            <AccountMenu account={account} isPro={isPro} onUpdate={updatePrefs} onSignOut={signOut} />
+          ) : (
+            accountLoaded && (
+              <button type="button" onClick={() => setSignInOpen(true)} className="btn-ghost">
+                <Mail className="h-4 w-4" /> Sign in
+              </button>
+            )
+          )}
         </div>
       </header>
 
@@ -574,6 +654,10 @@ export default function DashboardPage() {
             isPro={isPro}
             maxAlerts={PLAN_LIMITS[plan].maxAlerts}
             onProRequired={requirePro}
+            accountEmail={accountEmail}
+            emailAlerts={account?.emailAlerts ?? true}
+            onEmailAlertsChange={(value) => void updatePrefs({ emailAlerts: value })}
+            onSignIn={() => setSignInOpen(true)}
           />
         )}
       </div>
@@ -678,7 +762,16 @@ export default function DashboardPage() {
               <p className="mb-4 text-sm text-zinc-400">
                 <strong className="text-white">{saved.length}</strong> of {PLAN_LIMITS[plan].maxSaved} saved.
                 Details refresh when a listing appears in a search; sold or removed posts may no longer
-                open.
+                open.{" "}
+                {!accountEmail && accountLoaded && (
+                  <button
+                    type="button"
+                    onClick={() => setSignInOpen(true)}
+                    className="font-semibold text-orange-300 hover:text-orange-200"
+                  >
+                    Sign in to keep these on all your devices.
+                  </button>
+                )}
               </p>
               <div className="grid gap-5 sm:grid-cols-2 xl:grid-cols-3">
                 {saved.map((item) => (
@@ -744,6 +837,20 @@ export default function DashboardPage() {
         )}
       </main>
 
+      {accountLoaded && !accountEmail && (
+        <section className="mt-12 flex flex-wrap items-center justify-between gap-3 rounded-2xl border border-line bg-panel/70 p-4 sm:px-6">
+          <div>
+            <p className="font-bold text-white">Never miss a good deal</p>
+            <p className="text-sm text-zinc-400">
+              Get emailed when something matches your alerts, plus occasional deal tips. No password needed.
+            </p>
+          </div>
+          <button type="button" onClick={() => setSignInOpen(true)} className="btn-primary">
+            <Mail className="h-4 w-4" /> Get deal emails
+          </button>
+        </section>
+      )}
+
       {SUPPORT_EMAIL && (
         <footer className="mt-12 border-t border-line pt-6 text-center text-xs text-zinc-500">
           Lost your Pro license key or need help?{" "}
@@ -755,6 +862,8 @@ export default function DashboardPage() {
           </a>
         </footer>
       )}
+
+      <SignInModal open={signInOpen} onClose={() => setSignInOpen(false)} />
 
       <UpgradeModal
         reason={upgradeReason}

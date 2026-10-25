@@ -1,5 +1,6 @@
 import { PLAN_LIMITS, type Plan, type PlanLimits } from "./plan";
-import { isKeyActive } from "./licenses";
+import { getSessionEmail } from "./auth";
+import { findRecordsByEmail, isKeyActive, normalizeEmail } from "./licenses";
 
 /**
  * Pro entitlement via license keys. A key is valid if it was issued by the Stripe webhook
@@ -26,8 +27,29 @@ export async function isValidLicense(key: string | null | undefined): Promise<bo
   }
 }
 
+/** An email is Pro if it bought a license that is still active, or is a comped address in PRO_EMAILS. */
+export async function isProEmail(rawEmail: string): Promise<boolean> {
+  const email = normalizeEmail(rawEmail);
+  const comped = (process.env.PRO_EMAILS ?? "")
+    .split(",")
+    .map((value) => normalizeEmail(value))
+    .filter(Boolean);
+  if (comped.includes(email)) return true;
+  try {
+    for (const record of await findRecordsByEmail(email)) {
+      if (await isKeyActive(record.key)) return true;
+    }
+  } catch {
+    // storage hiccup: treat as Free rather than failing the request
+  }
+  return false;
+}
+
+/** Pro if the request carries a valid license key, or is signed in to an account that has Pro. */
 export async function planForRequest(req: Request): Promise<Plan> {
-  return (await isValidLicense(req.headers.get("x-license-key"))) ? "pro" : "free";
+  if (await isValidLicense(req.headers.get("x-license-key"))) return "pro";
+  const email = await getSessionEmail(req);
+  return email && (await isProEmail(email)) ? "pro" : "free";
 }
 
 export function limitsFor(plan: Plan): PlanLimits {

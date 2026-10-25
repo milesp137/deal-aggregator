@@ -1,7 +1,7 @@
 "use client";
 
 import { useState, type FormEvent } from "react";
-import { Bell, BellOff, BellRing, Loader2, Lock, Plus, Trash2 } from "lucide-react";
+import { Bell, BellOff, BellRing, Loader2, Lock, Mail, Plus, Trash2 } from "lucide-react";
 import type { AlertKeyword } from "@/lib/types";
 import type { UpgradeReason } from "@/lib/plan";
 import { formatPrice } from "@/lib/format";
@@ -18,6 +18,11 @@ interface AlertPanelProps {
   isPro: boolean;
   maxAlerts: number;
   onProRequired: (reason: UpgradeReason) => void;
+  /** Signed-in address that alert emails go to, or null when browsing anonymously. */
+  accountEmail: string | null;
+  emailAlerts: boolean;
+  onEmailAlertsChange: (value: boolean) => void;
+  onSignIn: () => void;
 }
 
 export default function AlertPanel({
@@ -31,6 +36,10 @@ export default function AlertPanel({
   isPro,
   maxAlerts,
   onProRequired,
+  accountEmail,
+  emailAlerts,
+  onEmailAlertsChange,
+  onSignIn,
 }: AlertPanelProps) {
   const [keyword, setKeyword] = useState("");
   const [maxPrice, setMaxPrice] = useState("");
@@ -107,6 +116,44 @@ export default function AlertPanel({
           </span>
         )}
       </div>
+
+      {accountEmail ? (
+        <div className="mb-4 flex flex-wrap items-center gap-x-3 gap-y-1 rounded-xl border border-line bg-canvas/40 px-3 py-2.5 text-sm">
+          <Mail className="h-4 w-4 shrink-0 text-brand" />
+          <span className="min-w-0 flex-1 text-zinc-300">
+            {emailAlerts ? (
+              <>
+                Matches are emailed to <strong className="text-white">{accountEmail}</strong>{" "}
+                <span className="text-zinc-500">
+                  ({isPro ? "as soon as they're found" : "one daily digest; Pro is instant"})
+                </span>
+              </>
+            ) : (
+              "Email alerts are off."
+            )}
+          </span>
+          <button
+            type="button"
+            onClick={() => onEmailAlertsChange(!emailAlerts)}
+            className="text-xs font-semibold text-zinc-400 underline-offset-2 hover:text-white hover:underline"
+          >
+            {emailAlerts ? "Turn off" : "Turn on"}
+          </button>
+        </div>
+      ) : (
+        <button
+          type="button"
+          onClick={onSignIn}
+          className="mb-4 flex w-full items-center gap-3 rounded-xl border border-brand/40 bg-brand/10 px-3 py-2.5 text-left text-sm text-zinc-200 transition hover:border-brand"
+        >
+          <Mail className="h-4 w-4 shrink-0 text-brand" />
+          <span className="flex-1">
+            <strong className="text-white">Get alerts by email</strong> and keep them on every device. Sign in with
+            just your email, no password.
+          </span>
+          <span className="shrink-0 font-semibold text-brand-soft">Sign in</span>
+        </button>
+      )}
 
       <form
         onSubmit={submit}

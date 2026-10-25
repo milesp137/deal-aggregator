@@ -17,6 +17,8 @@ export interface PlanLimits {
   notifications: boolean;
   /** Most listings a visitor can save to their watchlist. */
   maxSaved: number;
+  /** Fewest minutes between alert emails to one person (Free gets a daily digest). */
+  emailAlertCooldownMinutes: number;
 }
 
 export const PLAN_LIMITS: Record<Plan, PlanLimits> = {
@@ -28,6 +30,7 @@ export const PLAN_LIMITS: Record<Plan, PlanLimits> = {
     autoRefresh: false,
     notifications: false,
     maxSaved: 10,
+    emailAlertCooldownMinutes: 24 * 60,
   },
   pro: {
     maxResults: 500,
@@ -37,6 +40,7 @@ export const PLAN_LIMITS: Record<Plan, PlanLimits> = {
     autoRefresh: true,
     notifications: true,
     maxSaved: 200,
+    emailAlertCooldownMinutes: 20,
   },
 };
 
@@ -108,4 +112,5 @@ export const PRO_PERKS = [
   `Up to ${PLAN_LIMITS.pro.maxAlerts} keyword alerts with desktop notifications`,
   "Search nationwide, not just 100 miles",
   `Save up to ${PLAN_LIMITS.pro.maxSaved} listings to your watchlist`,
+  "Email alerts as soon as a match appears (Free gets one daily digest)",
 ];
