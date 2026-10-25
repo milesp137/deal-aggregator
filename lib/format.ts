@@ -55,4 +55,17 @@ export const PLATFORM_BADGE: Record<SourcePlatform, string> = {
   eBay: "bg-yellow-400 text-black",
   Marketplace: "bg-blue-500 text-white",
   Craigs: "bg-purple-500 text-white",
+  ShopGoodwill: "bg-emerald-500 text-black",
+  BaT: "bg-red-600 text-white",
+  Reverb: "bg-orange-500 text-black",
 };
+
+/** "3d 4h left", "5h 12m left", "12m left", or "Ended". */
+export function timeLeft(iso: string, now: number = Date.now()): string {
+  const minutes = Math.floor((new Date(iso).getTime() - now) / 60_000);
+  if (minutes <= 0) return "Ended";
+  if (minutes < 60) return `${minutes}m left`;
+  const hours = Math.floor(minutes / 60);
+  if (hours < 24) return `${hours}h ${minutes % 60}m left`;
+  return `${Math.floor(hours / 24)}d ${hours % 24}h left`;
+}

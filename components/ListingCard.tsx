@@ -5,6 +5,7 @@ import {
   BellRing,
   ChevronDown,
   Clock,
+  Gavel,
   Heart,
   MapPin,
   ShieldAlert,
@@ -12,8 +13,8 @@ import {
   TrendingDown,
   TrendingUp,
 } from "lucide-react";
-import type { AlertKeyword, Listing } from "@/lib/types";
-import { PLATFORM_BADGE, formatDistance, formatPrice, scoreTone, timeAgo } from "@/lib/format";
+import { SOURCE_BADGES, type AlertKeyword, type Listing } from "@/lib/types";
+import { PLATFORM_BADGE, formatDistance, formatPrice, scoreTone, timeAgo, timeLeft } from "@/lib/format";
 
 interface ListingCardProps {
   listing: Listing;
@@ -89,16 +90,25 @@ export default function ListingCard({
           <span
             className={`absolute left-3 top-3 rounded-md px-2 py-1 text-xs font-bold uppercase tracking-wide ${PLATFORM_BADGE[listing.sourcePlatform]}`}
           >
-            {listing.sourcePlatform}
+            {SOURCE_BADGES[listing.sourcePlatform]}
           </span>
 
-          <span
-            title={tone.label}
-            className={`absolute right-3 top-3 rounded-full px-3 py-1 text-sm font-bold backdrop-blur ${tone.badge}`}
-          >
-            {listing.dealScore}
-            <span className="text-xs font-semibold opacity-70">/10</span>
-          </span>
+          {listing.auction ? (
+            <span
+              title="Auction: the current bid isn't the final price, so there's no deal score"
+              className="absolute right-3 top-3 inline-flex items-center gap-1.5 rounded-full bg-black/60 px-3 py-1 text-sm font-bold text-zinc-100 ring-1 ring-inset ring-white/25 backdrop-blur"
+            >
+              <Gavel className="h-3.5 w-3.5" /> Auction
+            </span>
+          ) : (
+            <span
+              title={tone.label}
+              className={`absolute right-3 top-3 rounded-full px-3 py-1 text-sm font-bold backdrop-blur ${tone.badge}`}
+            >
+              {listing.dealScore}
+              <span className="text-xs font-semibold opacity-70">/10</span>
+            </span>
+          )}
 
           <button
             type="button"
@@ -142,6 +152,14 @@ export default function ListingCard({
         <div className="flex flex-1 flex-col gap-3 p-4">
           <div className="flex items-end justify-between gap-3">
             <div>
+              {listing.auction && (
+                <p className="text-xs font-semibold uppercase tracking-wide text-zinc-400">
+                  Current bid
+                  {listing.auction.bids !== null && (
+                    <> &middot; {listing.auction.bids} {listing.auction.bids === 1 ? "bid" : "bids"}</>
+                  )}
+                </p>
+              )}
               <p className="text-3xl font-extrabold tracking-tight text-white sm:text-4xl">
                 {formatPrice(listing.price)}
               </p>
@@ -188,7 +206,14 @@ export default function ListingCard({
             <p className="line-clamp-3 text-sm leading-relaxed text-zinc-400">{listing.description}</p>
           )}
 
-          {reasons.length > 0 && (
+          {listing.auction && (
+            <p className="text-xs leading-snug text-zinc-500">
+              Auction: bids rise until it closes, so there&apos;s no deal score. Check the final price before
+              deciding.
+            </p>
+          )}
+
+          {!listing.auction && reasons.length > 0 && (
             <div>
               <button
                 type="button"
@@ -227,7 +252,7 @@ export default function ListingCard({
             </span>
             <span className="inline-flex items-center gap-1">
               <Clock className="h-3.5 w-3.5" />
-              {timeAgo(listing.timestamp)}
+              {listing.auction ? timeLeft(listing.auction.endsAt) : timeAgo(listing.timestamp)}
             </span>
           </div>
         </div>

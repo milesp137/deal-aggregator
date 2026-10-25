@@ -34,6 +34,8 @@ import { useAccount } from "@/lib/useAccount";
 import { useSaved } from "@/lib/useSaved";
 import {
   ALL_SOURCES,
+  ORIGINAL_SOURCES,
+  SOURCE_NAMES,
   SORT_LABELS,
   type AlertHit,
   type AlertKeyword,
@@ -61,11 +63,7 @@ const MAX_VISIBLE_HITS = 4;
 
 const SOURCES_KEY = "dealradar:sources";
 
-const PLATFORM_NAMES: Record<string, string> = {
-  eBay: "eBay",
-  Marketplace: "Facebook Marketplace",
-  Craigs: "Craigslist",
-};
+const PLATFORM_NAMES: Record<string, string> = SOURCE_NAMES;
 
 type NotificationState = NotificationPermission | "unsupported";
 
@@ -186,7 +184,10 @@ export default function DashboardPage() {
       const saved = JSON.parse(window.localStorage.getItem(SOURCES_KEY) ?? "null") as unknown;
       if (Array.isArray(saved)) {
         const valid = ALL_SOURCES.filter((source) => saved.includes(source));
-        if (valid.length > 0) setSources(valid);
+        // Visitors who had every original site on get the newer sites too; anyone who had
+        // switched a site off keeps their own choice.
+        const hadEverything = ORIGINAL_SOURCES.every((source) => valid.includes(source));
+        if (valid.length > 0) setSources(hadEverything ? ALL_SOURCES : valid);
       }
     } catch {
       /* ignore corrupt storage */

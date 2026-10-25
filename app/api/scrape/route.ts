@@ -20,6 +20,7 @@ import {
 } from "@/lib/mockSources";
 import { DEFAULT_ORIGIN, lookupMarket } from "@/lib/market";
 import { scrapeFacebookMarketplace } from "@/lib/facebook";
+import { scrapeBringATrailer, scrapeReverb, scrapeShopGoodwill } from "@/lib/moreSources";
 import type { Plan } from "@/lib/plan";
 import { limitsFor, planForRequest } from "@/lib/pro";
 import { isCountryCode } from "@/lib/countries";
@@ -50,6 +51,9 @@ const DEFAULT_KEYWORDS = ["240sx", "coilovers", "turbo", "wheels"];
 const DEFAULT_PER_KEYWORD_LIMIT = 6;
 /** Typed searches fetch extra eBay results so the relevance filter has plenty to choose from. */
 const EBAY_SEARCH_LIMIT = 50;
+const SHOPGOODWILL_LIMIT = 20;
+const BAT_LIMIT = 12;
+const REVERB_LIMIT = 20;
 
 /**
  * Runs one scrape per keyword in parallel and merges the results. Individual keyword failures
@@ -394,21 +398,35 @@ function parseRequest(input: Record<string, unknown>): Required<ScrapeRequest> {
 /**
  * Mixes the sites so one source (eBay usually returns the most) can't fill the whole feed.
  * Input must already be sorted best-first. Within each relevance tier the listings take turns
- * Marketplace, eBay, Craigslist, each site keeping its own best-first order; a site that runs
- * out simply drops out of the rotation.
+ * across the sites, each site keeping its own best-first order; a site that runs out simply
+ * drops out of the rotation. All auctions (unscored) share ONE slot in the rotation, so they
+ * can't crowd out the scored deals.
  */
 function interleaveSources(
   items: Listing[],
   tierOf: (listing: Listing) => number,
 ): Listing[] {
-  const order: SourcePlatform[] = ["Marketplace", "eBay", "Craigs"];
+  const fixedPriceSites: SourcePlatform[] = ["Marketplace", "eBay", "Craigs", "Reverb", "ShopGoodwill"];
+  const auctionSites: SourcePlatform[] = ["ShopGoodwill", "BaT"];
   const tiers = [...new Set(items.map(tierOf))].sort((a, b) => a - b);
   const result: Listing[] = [];
 
   for (const tier of tiers) {
-    const queues = order.map((platform) =>
-      items.filter((item) => tierOf(item) === tier && item.sourcePlatform === platform),
+    const inTier = items.filter((item) => tierOf(item) === tier);
+    const queues = fixedPriceSites.map((platform) =>
+      inTier.filter((item) => item.sourcePlatform === platform && !item.auction),
     );
+    // Auctions from different sites take turns inside their shared slot.
+    const auctionQueues = auctionSites.map((platform) =>
+      inTier.filter((item) => item.sourcePlatform === platform && item.auction),
+    );
+    const auctions: Listing[] = [];
+    for (let round = 0; auctionQueues.some((queue) => round < queue.length); round++) {
+      for (const queue of auctionQueues) {
+        if (round < queue.length) auctions.push(queue[round]);
+      }
+    }
+    queues.push(auctions);
     for (let round = 0; queues.some((queue) => round < queue.length); round++) {
       for (const queue of queues) {
         if (round < queue.length) result.push(queue[round]);
@@ -435,7 +453,12 @@ async function runScrape(request: Required<ScrapeRequest>, plan: Plan): Promise<
     request.sources.includes(platform) && (platform === "eBay" || usOnlySitesAllowed);
   const skipped = async (): Promise<SourceResult> => ({ drafts: [], live: false });
 
-  const [ebay, marketplace, craigslist] = await Promise.all([
+  // ShopGoodwill and Reverb only make sense for a typed search: a blank browse of "turbo" and
+  // "wheels" would fill the feed with kitchen appliances and guitar pedals.
+  const hasQuery = request.query !== "";
+  const noSample = async () => [] as ListingDraft[];
+
+  const [ebay, marketplace, craigslist, shopgoodwill, bat, reverb] = await Promise.all([
     !wants("eBay")
       ? skipped()
       : liveOrSample(
@@ -473,12 +496,39 @@ async function runScrape(request: Required<ScrapeRequest>, plan: Plan): Promise<
           async () =>
             parseCraigslist(await fetchSource(() => getCraigslistHtml(now)), request.query),
         ),
+    !wants("ShopGoodwill") || !hasQuery
+      ? skipped()
+      : liveOrSample(
+          "ShopGoodwill",
+          () => scrapeKeywords(keywords, (keyword) => scrapeShopGoodwill(keyword, SHOPGOODWILL_LIMIT)),
+          "ShopGoodwill scraper unavailable",
+          noSample,
+        ),
+    !wants("BaT")
+      ? skipped()
+      : liveOrSample(
+          "BaT",
+          () => scrapeKeywords(keywords, (keyword) => scrapeBringATrailer(keyword, perKeywordLimit ?? BAT_LIMIT)),
+          "Bring a Trailer scraper unavailable",
+          noSample,
+        ),
+    !wants("Reverb") || !hasQuery
+      ? skipped()
+      : liveOrSample(
+          "Reverb",
+          () => scrapeKeywords(keywords, (keyword) => scrapeReverb(keyword, REVERB_LIMIT)),
+          "Reverb scraper unavailable",
+          noSample,
+        ),
   ]);
 
   const live: Record<SourcePlatform, boolean> = {
     eBay: ebay.live,
     Marketplace: marketplace.live,
     Craigs: craigslist.live,
+    ShopGoodwill: shopgoodwill.live,
+    BaT: bat.live,
+    Reverb: reverb.live,
   };
 
   // Detailed reasons stay in the server logs and dev mode; visitors only see a short message.
@@ -491,13 +541,28 @@ async function runScrape(request: Required<ScrapeRequest>, plan: Plan): Promise<
   report("eBay", ebay.error);
   report("Marketplace", marketplace.error);
   report("Craigs", craigslist.error);
+  report("ShopGoodwill", shopgoodwill.error);
+  report("BaT", bat.error);
+  report("Reverb", reverb.error);
 
   const seen = new Set<string>();
-  const drafts = [...ebay.drafts, ...marketplace.drafts, ...craigslist.drafts].filter((draft) =>
-    seen.has(draft.id) ? false : (seen.add(draft.id), true),
-  );
+  const drafts = [
+    ...ebay.drafts,
+    ...marketplace.drafts,
+    ...craigslist.drafts,
+    ...shopgoodwill.drafts,
+    ...bat.drafts,
+    ...reverb.drafts,
+  ].filter((draft) => (seen.has(draft.id) ? false : (seen.add(draft.id), true)));
 
-  const sources: Record<SourcePlatform, number> = { eBay: 0, Marketplace: 0, Craigs: 0 };
+  const sources: Record<SourcePlatform, number> = {
+    eBay: 0,
+    Marketplace: 0,
+    Craigs: 0,
+    ShopGoodwill: 0,
+    BaT: 0,
+    Reverb: 0,
+  };
   for (const draft of drafts) sources[draft.sourcePlatform]++;
 
   const duplicateIds = findDuplicateIds(drafts);
@@ -539,7 +604,8 @@ async function runScrape(request: Required<ScrapeRequest>, plan: Plan): Promise<
       : (DEFAULT_KEYWORDS.find((keyword) => titleMatchesQuery(draft.title, keyword)) ?? "other");
   const peerPrices = new Map<string, number[]>();
   for (const draft of refined) {
-    if (relevanceTier(draft.id) !== 0 || draft.price < MIN_REAL_PRICE) continue;
+    // Auction prices are current bids, not what things sell for, so they never set the benchmark.
+    if (draft.auction || relevanceTier(draft.id) !== 0 || draft.price < MIN_REAL_PRICE) continue;
     const group = groupOf(draft);
     if (group === "other") continue;
     peerPrices.set(group, [...(peerPrices.get(group) ?? []), draft.price]);
@@ -548,8 +614,11 @@ async function runScrape(request: Required<ScrapeRequest>, plan: Plan): Promise<
   for (const [group, prices] of peerPrices) peerReferences.set(group, buildReference(prices, null));
 
   const enriched: Listing[] = refined.map((draft) => {
-    const reference =
-      peerReferences.get(groupOf(draft)) ?? buildReference([], lookupMarket(draft.title)?.median ?? null);
+    // Auctions are not compared to anything: there is no typical price for a current bid.
+    const reference = draft.auction
+      ? null
+      : (peerReferences.get(groupOf(draft)) ??
+        buildReference([], lookupMarket(draft.title)?.median ?? null));
     const lowPrice: LowPriceCheck | null =
       reference &&
       (reference.source === "market" || (reference.peerPrices?.length ?? 0) >= MIN_PEERS_FOR_SCAM_CHECK)
@@ -563,20 +632,30 @@ async function runScrape(request: Required<ScrapeRequest>, plan: Plan): Promise<
       draft.lat === null || draft.lng === null
         ? null
         : Math.round(haversineMiles(request.originLat, request.originLng, draft.lat, draft.lng) * 10) / 10;
-    const scored = scoreListing(
-      {
-        price: draft.price,
-        title: draft.title,
-        description: draft.description,
-        timestamp: draft.timestamp,
-        distanceMiles,
-        imageUrl: draft.imageUrl,
-        relevanceTier: relevanceTier(draft.id),
-        broadSearch: !request.query,
-      },
-      reference,
-      now,
-    );
+    const scored = draft.auction
+      ? {
+          score: 0,
+          reasons: [
+            {
+              text: "No deal score for auctions: the current bid isn't the price it will sell for",
+              tone: "neutral" as const,
+            },
+          ],
+        }
+      : scoreListing(
+          {
+            price: draft.price,
+            title: draft.title,
+            description: draft.description,
+            timestamp: draft.timestamp,
+            distanceMiles,
+            imageUrl: draft.imageUrl,
+            relevanceTier: relevanceTier(draft.id),
+            broadSearch: !request.query,
+          },
+          reference,
+          now,
+        );
     const dealScore = verdict.isScam ? Math.min(scored.score, SCAM_SCORE_CAP) : scored.score;
     const scoreReasons: ScoreReason[] = verdict.isScam
       ? [
@@ -605,6 +684,7 @@ async function runScrape(request: Required<ScrapeRequest>, plan: Plan): Promise<
       timestamp: draft.timestamp,
       marketMedian: reference ? Math.round(reference.median) : null,
       url: draft.url,
+      ...(draft.auction ? { auction: draft.auction } : {}),
     } as Listing;
   });
 
@@ -615,10 +695,13 @@ async function runScrape(request: Required<ScrapeRequest>, plan: Plan): Promise<
   const matching = enriched
     .filter(
       (listing) =>
-        (maxDistance >= ANY_DISTANCE ||
-          listing.distanceMiles === null ||
-          listing.distanceMiles <= maxDistance) &&
-        listing.dealScore >= request.minDealScore &&
+        // Auctions have no deal score and are bought from anywhere, so score and distance
+        // filters don't apply to them.
+        (listing.auction !== undefined ||
+          ((maxDistance >= ANY_DISTANCE ||
+            listing.distanceMiles === null ||
+            listing.distanceMiles <= maxDistance) &&
+            listing.dealScore >= request.minDealScore)) &&
         (request.minPrice <= 0 || listing.price >= request.minPrice) &&
         (request.maxPrice <= 0 || listing.price <= request.maxPrice),
     )

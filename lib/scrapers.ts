@@ -1,5 +1,5 @@
 import * as cheerio from "cheerio";
-import type { SourcePlatform } from "./types";
+import type { AuctionInfo, SourcePlatform } from "./types";
 import { placeholderImage } from "./placeholder";
 
 /** A listing as scraped from a platform, before scoring / scam detection. */
@@ -19,6 +19,8 @@ export interface ListingDraft {
   url: string;
   /** True when the data is built-in sample data rather than a real scraped post. */
   isSample?: boolean;
+  /** Set for auctions: `price` is then the current bid, not a final price. */
+  auction?: AuctionInfo;
 }
 
 export interface Origin {

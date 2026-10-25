@@ -1,7 +1,7 @@
 import { SITE_URL } from "./email";
 import { formatPrice } from "./format";
 import type { User } from "./auth";
-import type { Listing } from "./types";
+import { SOURCE_NAMES, type Listing } from "./types";
 
 /** Resend helper plus the sign-in, alert and marketing email templates. */
 
@@ -115,7 +115,9 @@ export function alertEmail(user: User, groups: AlertMatches[]): Omit<Mail, "to">
             <td style="padding:8px 0;vertical-align:top">
               <a href="${url}" style="color:#111;font-weight:bold;text-decoration:none">${escapeHtml(listing.title)}</a><br>
               <span style="font-size:18px;font-weight:bold">${formatPrice(listing.price)}</span>
-              <span style="color:#555;font-size:13px"> &middot; deal score ${listing.dealScore}/10 &middot; ${escapeHtml(listing.sourcePlatform === "Craigs" ? "Craigslist" : listing.sourcePlatform)}</span>
+              <span style="color:#555;font-size:13px"> &middot; ${
+                listing.auction ? "current bid, auction" : `deal score ${listing.dealScore}/10`
+              } &middot; ${escapeHtml(SOURCE_NAMES[listing.sourcePlatform])}</span>
             </td></tr>`;
         })
         .join("");
@@ -137,7 +139,12 @@ export function alertEmail(user: User, groups: AlertMatches[]): Omit<Mail, "to">
         (group) =>
           `New matches for "${group.keyword}":\n` +
           group.listings
-            .map((l) => `- ${l.title} - ${formatPrice(l.price)} (score ${l.dealScore}/10)\n  ${l.url ?? SITE_URL}`)
+            .map(
+              (l) =>
+                `- ${l.title} - ${formatPrice(l.price)} (${
+                  l.auction ? "current bid, auction" : `score ${l.dealScore}/10`
+                })\n  ${l.url ?? SITE_URL}`,
+            )
             .join("\n") +
           (group.more > 0 ? `\n+ ${group.more} more on DealRadar` : ""),
       )

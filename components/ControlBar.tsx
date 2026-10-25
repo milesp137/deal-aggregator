@@ -283,7 +283,7 @@ export default function ControlBar(props: ControlBarProps) {
           <CountryPicker value={country} onChange={onCountryChange} disabled={!countryOnly} />
           {countryOnly && country !== "US" && (
             <span className="text-xs text-zinc-500">
-              Facebook Marketplace and Craigslist are US-only, so only eBay is searched.
+              The other sites are US-only, so only eBay is searched.
             </span>
           )}
         </div>

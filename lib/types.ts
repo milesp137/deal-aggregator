@@ -1,13 +1,37 @@
-export type SourcePlatform = "eBay" | "Marketplace" | "Craigs";
+export type SourcePlatform = "eBay" | "Marketplace" | "Craigs" | "ShopGoodwill" | "BaT" | "Reverb";
 
 /** Every platform that can be searched, in display order. */
-export const ALL_SOURCES: SourcePlatform[] = ["Marketplace", "eBay", "Craigs"];
+export const ALL_SOURCES: SourcePlatform[] = ["Marketplace", "eBay", "Craigs", "ShopGoodwill", "BaT", "Reverb"];
+
+/** The sources that existed before ShopGoodwill, Bring a Trailer and Reverb were added. */
+export const ORIGINAL_SOURCES: SourcePlatform[] = ["Marketplace", "eBay", "Craigs"];
 
 export const SOURCE_NAMES: Record<SourcePlatform, string> = {
   Marketplace: "Facebook Marketplace",
   eBay: "eBay",
   Craigs: "Craigslist",
+  ShopGoodwill: "ShopGoodwill",
+  BaT: "Bring a Trailer",
+  Reverb: "Reverb",
 };
+
+/** Text on the small badge over each listing photo. */
+export const SOURCE_BADGES: Record<SourcePlatform, string> = {
+  Marketplace: "Marketplace",
+  eBay: "eBay",
+  Craigs: "Craigs",
+  ShopGoodwill: "ShopGoodwill",
+  BaT: "Bring a Trailer",
+  Reverb: "Reverb",
+};
+
+/** Present on auction listings, where `price` is the current bid rather than a final price. */
+export interface AuctionInfo {
+  /** ISO-8601 time the auction closes. */
+  endsAt: string;
+  /** Number of bids so far, when the site says. */
+  bids: number | null;
+}
 
 /** A normalized listing, identical in shape regardless of which platform it came from. */
 export interface Listing {
@@ -24,8 +48,13 @@ export interface Listing {
   imageUrl: string;
   sourcePlatform: SourcePlatform;
   description: string;
-  /** 1 (overpriced) to 10 (steal), based on price vs. market median. */
+  /**
+   * 1 (overpriced) to 10 (steal), based on price vs. market median. Auctions have no score
+   * (always 0), because a current bid isn't what the item will sell for.
+   */
   dealScore: number;
+  /** Set for auctions; see AuctionInfo. */
+  auction?: AuctionInfo;
   isScam: boolean;
   /** Human readable explanation of every red flag; null when the listing looks clean. */
   scamReasoning: string | null;
