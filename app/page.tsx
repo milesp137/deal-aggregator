@@ -82,6 +82,8 @@ export default function DashboardPage() {
   const [countryOnly, setCountryOnly] = useState(false);
   const [country, setCountry] = useState("US");
   const [category, setCategory] = useState<string>(DEFAULT_CATEGORY.id);
+  // Words to leave out ("drill, knife"). Belongs to one search, so it is not remembered.
+  const [exclude, setExclude] = useState("");
   const [recent, setRecent] = useState<string[]>([]);
   const [prefsLoaded, setPrefsLoaded] = useState(false);
 
@@ -127,6 +129,7 @@ export default function DashboardPage() {
     maxPrice,
     country: "",
     category: DEFAULT_CATEGORY.id as string,
+    exclude: "",
     originLat: location?.lat,
     originLng: location?.lng,
   });
@@ -145,11 +148,13 @@ export default function DashboardPage() {
       maxPrice,
       country: countryOnly ? country : "",
       category,
+      exclude,
       originLat: location?.lat,
       originLng: location?.lng,
     };
   }, [
     category,
+    exclude,
     query,
     maxDistance,
     minScore,
@@ -230,6 +235,7 @@ export default function DashboardPage() {
         maxPrice: Number(params.maxPrice) || 0,
         country: params.country,
         category: params.category,
+        exclude: params.exclude,
         originLat: params.originLat,
         originLng: params.originLng,
       });
@@ -321,6 +327,7 @@ export default function DashboardPage() {
     countryOnly,
     country,
     category,
+    exclude,
     runScrape,
   ]);
 
@@ -412,6 +419,7 @@ export default function DashboardPage() {
     setHideScams(false);
     setMinPrice("");
     setMaxPrice("");
+    setExclude("");
     setSort("best");
     setCountryOnly(false);
     changeSources(ALL_SOURCES);
@@ -436,8 +444,10 @@ export default function DashboardPage() {
       category: DEFAULT_CATEGORY.id,
       minPrice: "",
       maxPrice: "",
+      exclude: "",
     };
     setQuery("");
+    setExclude("");
     setCategory(DEFAULT_CATEGORY.id);
     setMinPrice("");
     setMaxPrice("");
@@ -660,6 +670,8 @@ export default function DashboardPage() {
           onCountryOnlyChange={setCountryOnly}
           country={country}
           onCountryChange={setCountry}
+          exclude={exclude}
+          onExcludeChange={setExclude}
         />
 
         <BrowseBar

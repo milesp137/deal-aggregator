@@ -27,6 +27,7 @@ import type { Plan } from "@/lib/plan";
 import { limitsFor, planForRequest } from "@/lib/pro";
 import { isCountryCode } from "@/lib/countries";
 import { classifyTitle, MIN_ON_TARGET_TO_HIDE } from "@/lib/relevance";
+import { similarPrices } from "@/lib/similar";
 import { buildReference, scoreListing, type PriceReference } from "@/lib/scoring";
 import {
   isEbayConfigured,
@@ -380,8 +381,22 @@ function parseSources(value: unknown): SourcePlatform[] {
   return chosen.length > 0 ? chosen : ALL_SOURCES;
 }
 
+const MAX_EXCLUDE_TERMS = 10;
+
+/** "drill, -knife, lighter" -> ["drill","knife","lighter"]; junk and extras are dropped. */
+function parseExclude(value: unknown): string[] {
+  if (typeof value !== "string") return [];
+  const terms = value
+    .toLowerCase()
+    .split(/[,\n;]+/)
+    .map((term) => term.replace(/^[\s-]+/, "").replace(/[^a-z0-9 \-]/g, " ").replace(/\s+/g, " ").trim())
+    .filter((term) => term.length >= 2 && term.length <= 30);
+  return [...new Set(terms)].slice(0, MAX_EXCLUDE_TERMS);
+}
+
 function parseRequest(input: Record<string, unknown>): Required<ScrapeRequest> {
   return {
+    exclude: parseExclude(input.exclude).join(", "),
     sources: parseSources(input.sources),
     query: typeof input.query === "string" ? input.query.trim().slice(0, 120) : "",
     maxDistance: clamp(toNumber(input.maxDistance, ANY_DISTANCE), 1, ANY_DISTANCE),
@@ -450,6 +465,8 @@ async function runScrape(request: Required<ScrapeRequest>, plan: Plan): Promise<
   const perKeywordLimit = request.query ? undefined : DEFAULT_PER_KEYWORD_LIMIT;
   const keywordsFor = (platform: SourcePlatform) =>
     request.query ? keywords : (category.siteKeywords?.[platform] ?? keywords);
+  // "Leave out" words the shopper typed. Single words also go to eBay as "-word".
+  const excludeTerms = request.exclude ? request.exclude.split(", ") : [];
 
   // Sources the user switched off are never contacted (faster, and saves proxy bandwidth).
   // The other sites only cover the US, so a non-US country means eBay only. While browsing a
@@ -474,7 +491,12 @@ async function runScrape(request: Required<ScrapeRequest>, plan: Plan): Promise<
           isEbayConfigured()
             ? () =>
               scrapeKeywords(keywordsFor("eBay"), (keyword) =>
-                scrapeEbay(keyword, perKeywordLimit ?? EBAY_SEARCH_LIMIT, request.country),
+                scrapeEbay(
+                  keyword,
+                  perKeywordLimit ?? EBAY_SEARCH_LIMIT,
+                  request.country,
+                  excludeTerms,
+                ),
               )
             : null,
           "eBay API keys not configured (set EBAY_CLIENT_ID and EBAY_CLIENT_SECRET)",
@@ -561,7 +583,9 @@ async function runScrape(request: Required<ScrapeRequest>, plan: Plan): Promise<
     ...shopgoodwill.drafts,
     ...bat.drafts,
     ...reverb.drafts,
-  ].filter((draft) => (seen.has(draft.id) ? false : (seen.add(draft.id), true)));
+  ]
+    .filter((draft) => (seen.has(draft.id) ? false : (seen.add(draft.id), true)))
+    .filter((draft) => !excludeTerms.some((term) => titleMatchesQuery(draft.title, term)));
 
   const sources: Record<SourcePlatform, number> = {
     eBay: 0,
@@ -624,12 +648,46 @@ async function runScrape(request: Required<ScrapeRequest>, plan: Plan): Promise<
   const peerReferences = new Map<string, PriceReference | null>();
   for (const [group, prices] of peerPrices) peerReferences.set(group, buildReference(prices, null));
 
+  // Each listing is compared with the listings whose titles look most like it, not with the
+  // whole search: an $11 emergency blanket among camping gear is judged against other blankets.
+  const searchWords = new Set(
+    [request.query, ...keywords].join(" ").toLowerCase().split(/[^a-z0-9]+/).filter(Boolean),
+  );
+  const similarMap = similarPrices(
+    refined
+      .filter(
+        (draft) =>
+          !draft.auction &&
+          relevanceTier(draft.id) === 0 &&
+          draft.price >= MIN_REAL_PRICE &&
+          groupOf(draft) !== "other",
+      )
+      .map((draft) => ({ id: draft.id, title: draft.title, price: draft.price, group: groupOf(draft) })),
+    searchWords,
+  );
+  // A big pool of results with no close matches is a mixed bag, so its median means little.
+  const ROUGH_POOL_SIZE = 15;
+
   const enriched: Listing[] = refined.map((draft) => {
     // Auctions are not compared to anything: there is no typical price for a current bid.
-    const reference = draft.auction
-      ? null
-      : (peerReferences.get(groupOf(draft)) ??
-        buildReference([], lookupMarket(draft.title)?.median ?? null));
+    let reference: PriceReference | null = null;
+    if (!draft.auction) {
+      const near = similarMap.get(draft.id);
+      const nearReference = near ? buildReference(near, null) : null;
+      const groupReference = peerReferences.get(groupOf(draft)) ?? null;
+      if (nearReference) {
+        reference = { ...nearReference, basis: "similar" };
+      } else if (groupReference) {
+        const poolSize = peerPrices.get(groupOf(draft))?.length ?? 0;
+        reference = {
+          ...groupReference,
+          basis: "search",
+          rough: request.query !== "" && poolSize >= ROUGH_POOL_SIZE,
+        };
+      } else {
+        reference = buildReference([], lookupMarket(draft.title)?.median ?? null);
+      }
+    }
     // An accessory or part costing far less than the item itself is normal, not a scam sign.
     const lowPrice: LowPriceCheck | null =
       reference &&
@@ -665,6 +723,7 @@ async function runScrape(request: Required<ScrapeRequest>, plan: Plan): Promise<
             imageUrl: draft.imageUrl,
             relevanceTier: relevanceTier(draft.id),
             broadSearch: !request.query,
+            seller: draft.seller,
           },
           reference,
           now,
@@ -698,6 +757,7 @@ async function runScrape(request: Required<ScrapeRequest>, plan: Plan): Promise<
       marketMedian: reference ? Math.round(reference.median) : null,
       url: draft.url,
       ...(draft.auction ? { auction: draft.auction } : {}),
+      ...(draft.seller ? { seller: draft.seller } : {}),
     } as Listing;
   });
 

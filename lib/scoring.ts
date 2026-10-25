@@ -8,7 +8,7 @@
  * listings at the same price don't all land on the same number.
  */
 
-import type { ScoreReason } from "./types";
+import type { ScoreReason, SellerInfo } from "./types";
 
 /** Fewest similar listings needed before their prices are trusted as the reference. */
 export const MIN_PEERS = 5;
@@ -20,6 +20,10 @@ export interface PriceReference {
   source: "peers" | "market";
   /** Sorted peer prices, when the reference came from the search results. */
   peerPrices: number[] | null;
+  /** "similar": compared with listings whose titles look alike. "search": with the whole search. */
+  basis?: "similar" | "search";
+  /** Few close matches inside a large, mixed set of results: the comparison is only a rough guide. */
+  rough?: boolean;
 }
 
 /** Median after dropping the cheapest and priciest 10%, so a few outliers don't skew it. */
@@ -114,6 +118,8 @@ export interface ScoreInput {
   relevanceTier: 0 | 1 | 2;
   /** True for blank "browse" searches, where unrelated items share one price comparison. */
   broadSearch?: boolean;
+  /** Seller reputation when the site publishes it. */
+  seller?: SellerInfo;
 }
 
 export interface ScoreResult {
@@ -128,13 +134,16 @@ export function scoreListing(input: ScoreInput, reference: PriceReference | null
   const reasons: ScoreReason[] = [];
   let score = priceScore(input.price, reference);
   let veryLow = false;
+  let sellerCap = 10;
 
   if (reference && reference.median > 0) {
     const ratio = input.price / reference.median;
     const percent = Math.round(Math.abs(ratio - 1) * 100);
     const basis =
       reference.source === "peers"
-        ? `similar listings in this search (${reference.peerPrices?.length ?? 0} compared)`
+        ? reference.basis === "similar"
+          ? `the ${reference.peerPrices?.length ?? 0} most similar listings`
+          : `listings in this search (${reference.peerPrices?.length ?? 0} compared)`
         : "this kind of item (market estimate)";
     if (reference.source === "peers" && ratio < VERY_LOW_RATIO) {
       // Not a real bargain: far too cheap to be the same thing as the other results.
@@ -162,6 +171,15 @@ export function scoreListing(input: ScoreInput, reference: PriceReference | null
   } else {
     reasons.push({
       text: "Too few similar listings to judge the price, so this starts from a neutral 5",
+      tone: "neutral",
+    });
+  }
+
+  if (reference?.rough) {
+    // Nothing close enough to compare with, so the number is a weak signal: pull it toward 5.
+    score = Math.min(7, 5 + (score - 5) * 0.6);
+    reasons.push({
+      text: "Few close matches to compare with in these mixed results, so this score is a rough guide",
       tone: "neutral",
     });
   }
@@ -200,12 +218,32 @@ export function scoreListing(input: ScoreInput, reference: PriceReference | null
     score += 0.5;
     reasons.push({ text: "Close to you, under 30 miles (+0.5)", tone: "good" });
   }
+  const seller = input.seller;
+  if (seller && (seller.feedbackPercent !== undefined || seller.feedbackCount !== undefined)) {
+    const percent = seller.feedbackPercent;
+    const count = seller.feedbackCount ?? 0;
+    if (percent !== undefined && count >= 10 && percent < 90) {
+      score -= 2;
+      sellerCap = 4;
+      reasons.push({ text: `Poorly rated seller: ${percent}% positive feedback (-2)`, tone: "bad" });
+    } else if (percent !== undefined && count >= 10 && percent < 95) {
+      score -= 1;
+      reasons.push({ text: `Below-average seller rating: ${percent}% positive (-1)`, tone: "bad" });
+    } else if (seller.feedbackCount !== undefined && count < 5) {
+      score -= 0.5;
+      reasons.push({ text: "Brand-new seller with almost no feedback (-0.5)", tone: "bad" });
+    } else if (percent !== undefined && percent >= 99 && count >= 500) {
+      score += 0.5;
+      reasons.push({ text: `Established seller: ${percent}% positive from ${count.toLocaleString("en-US")} ratings (+0.5)`, tone: "good" });
+    }
+  }
   if (input.imageUrl.startsWith("data:image/svg")) {
     score -= 0.5; // no real photo
     reasons.push({ text: "No real photo (-0.5)", tone: "bad" });
   }
 
   if (veryLow) score = Math.min(score, 4);
+  score = Math.min(score, sellerCap);
 
   // Accessories and "made for it" parts aren't comparable to the item, so they can't be steals.
   const cap = input.relevanceTier === 2 ? 3 : input.relevanceTier === 1 ? 5 : null;

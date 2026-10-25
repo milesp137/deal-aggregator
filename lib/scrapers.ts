@@ -1,5 +1,5 @@
 import * as cheerio from "cheerio";
-import type { AuctionInfo, SourcePlatform } from "./types";
+import type { AuctionInfo, SellerInfo, SourcePlatform } from "./types";
 import { placeholderImage } from "./placeholder";
 
 /** A listing as scraped from a platform, before scoring / scam detection. */
@@ -21,6 +21,8 @@ export interface ListingDraft {
   isSample?: boolean;
   /** Set for auctions: `price` is then the current bid, not a final price. */
   auction?: AuctionInfo;
+  /** Seller reputation, when the site provides it. */
+  seller?: SellerInfo;
 }
 
 export interface Origin {
@@ -215,10 +217,13 @@ interface EbaySummary {
   itemCreationDate?: string;
   shortDescription?: string;
   condition?: string;
+  seller?: { username?: string; feedbackPercentage?: string; feedbackScore?: number };
 }
 
 /** A photo used by this many listings in one search is a seller's stock image, not the item. */
 const SHARED_IMAGE_MIN_USES = 3;
+/** eBay listings below this are almost never real deals on cars, electronics or instruments. */
+const EBAY_MIN_PRICE = 10;
 
 const EBAY_IMAGE_SIZE = /\/s-l\d+\.(jpg|jpeg|png|webp)(?=$|\?)/i;
 
@@ -238,7 +243,7 @@ export function isEbayConfigured(): boolean {
   return Boolean(process.env.EBAY_CLIENT_ID && process.env.EBAY_CLIENT_SECRET);
 }
 
-async function getEbayToken(): Promise<string> {
+export async function getEbayToken(): Promise<string> {
   if (ebayToken && ebayToken.expiresAt > Date.now() + 60_000) return ebayToken.value;
 
   const credentials = Buffer.from(
@@ -263,15 +268,27 @@ async function getEbayToken(): Promise<string> {
  * EBAY_CLIENT_SECRET (free at developer.ebay.com). Each listing links to its item page
  * (itemWebUrl) and uses the item's primary photo.
  */
-export async function scrapeEbay(query: string, limit = 20, country = ""): Promise<ListingDraft[]> {
+export async function scrapeEbay(
+  query: string,
+  limit = 20,
+  country = "",
+  /** Single words the shopper wants left out; sent to eBay as "-word" so slots aren't wasted. */
+  exclude: string[] = [],
+): Promise<ListingDraft[]> {
   const token = await getEbayToken();
   // `country` (ISO code) limits results to items located there; empty means anywhere.
-  const filters = ["buyingOptions:{FIXED_PRICE}", ...(/^[A-Z]{2}$/.test(country) ? [`itemLocationCountry:${country}`] : [])];
+  const filters = [
+    "buyingOptions:{FIXED_PRICE}",
+    // Server-side price floor: $1-$9 dropship gadgets would otherwise use up result slots.
+    `price:[${EBAY_MIN_PRICE}..]`,
+    "priceCurrency:USD",
+    ...(/^[A-Z]{2}$/.test(country) ? [`itemLocationCountry:${country}`] : []),
+  ];
   const url =
     "https://api.ebay.com/buy/browse/v1/item_summary/search" +
     // No `sort` = eBay's "Best Match", which puts real guitars first. `sort=newlyListed` returned
     // whatever was uploaded last, which for broad words is pickup rings, straps and stands.
-    `?q=${encodeURIComponent(query)}&limit=${limit}&filter=${encodeURIComponent(filters.join(","))}`;
+    `?q=${encodeURIComponent([query, ...exclude.filter((word) => /^[a-z0-9]+$/i.test(word)).map((word) => `-${word}`)].join(" "))}&limit=${limit}&filter=${encodeURIComponent(filters.join(","))}`;
   const response = await fetchWithTimeout(url, {
     headers: { Authorization: `Bearer ${token}`, "X-EBAY-C-MARKETPLACE-ID": "EBAY_US" },
   });
@@ -290,9 +307,22 @@ export async function scrapeEbay(query: string, limit = 20, country = ""): Promi
   }
   const isSharedImage = (url: string) => (imageUses.get(ebayImageKey(url)) ?? 0) >= SHARED_IMAGE_MIN_USES;
 
+  // The same stock photo at the same price on several listings is one dropshipped product posted
+  // repeatedly. Keep the first; listings sharing a photo at DIFFERENT prices are left alone.
+  const seenPhotoPrice = new Set<string>();
+
   return summaries.flatMap((item): ListingDraft[] => {
     const price = item.price ? parsePrice(item.price.value) : null;
     if (price === null || !item.itemWebUrl) return [];
+    // eBay can match a word that only appears in the description or a hidden item specific.
+    // Require every search word in the title itself.
+    if (query && !titleMatchesQuery(cleanText(item.title), query)) return [];
+    const firstImage = item.image?.imageUrl;
+    if (firstImage && isSharedImage(firstImage)) {
+      const key = `${ebayImageKey(firstImage)}|${price}`;
+      if (seenPhotoPrice.has(key)) return [];
+      seenPhotoPrice.add(key);
+    }
     const photos = [
       item.image?.imageUrl,
       ...(item.additionalImages ?? []).map((image) => image.imageUrl),
@@ -302,9 +332,20 @@ export async function scrapeEbay(query: string, limit = 20, country = ""): Promi
     const title = cleanText(item.title);
     const place = item.itemLocation;
     const location = [place?.city, place?.stateOrProvince].filter(Boolean).join(", ");
+    const feedbackPercent = Number.parseFloat(item.seller?.feedbackPercentage ?? "");
+    const seller: SellerInfo | undefined = item.seller
+      ? {
+          name: item.seller.username,
+          ...(Number.isFinite(feedbackPercent) ? { feedbackPercent } : {}),
+          ...(typeof item.seller.feedbackScore === "number"
+            ? { feedbackCount: item.seller.feedbackScore }
+            : {}),
+        }
+      : undefined;
     return [
       {
         id: `ebay-${item.itemId}`,
+        ...(seller ? { seller } : {}),
         title,
         price,
         location: location || (place?.country ? `Ships from ${place.country}` : "Ships from US"),

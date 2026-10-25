@@ -10,6 +10,7 @@ import {
   MapPin,
   ShieldAlert,
   Sparkles,
+  Star,
   TrendingDown,
   TrendingUp,
 } from "lucide-react";
@@ -254,6 +255,20 @@ export default function ListingCard({
               <Clock className="h-3.5 w-3.5" />
               {listing.auction ? timeLeft(listing.auction.endsAt) : timeAgo(listing.timestamp)}
             </span>
+            {listing.seller?.feedbackPercent !== undefined && (
+              <span
+                className={`inline-flex items-center gap-1 ${
+                  listing.seller.feedbackPercent < 95 ? "text-amber-400" : ""
+                }`}
+                title="Seller's positive feedback and number of ratings"
+              >
+                <Star className="h-3.5 w-3.5" />
+                {listing.seller.feedbackPercent}%
+                {listing.seller.feedbackCount !== undefined && (
+                  <> ({listing.seller.feedbackCount.toLocaleString("en-US")})</>
+                )}
+              </span>
+            )}
           </div>
         </div>
       </article>

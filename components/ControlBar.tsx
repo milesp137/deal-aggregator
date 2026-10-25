@@ -2,7 +2,7 @@
 
 import type { FormEvent } from "react";
 import CountryPicker from "@/components/CountryPicker";
-import { Check, Gauge, Globe, Lightbulb, Loader2, Lock, MapPin, Radar, RefreshCw, Search, ShieldOff } from "lucide-react";
+import { Ban, Check, Gauge, Globe, Lightbulb, Loader2, Lock, MapPin, Radar, RefreshCw, Search, ShieldOff } from "lucide-react";
 import { FREE_MAX_DISTANCE, type UpgradeReason } from "@/lib/plan";
 import { ALL_SOURCES, SORT_LABELS, SOURCE_NAMES, type SortMode, type SourcePlatform } from "@/lib/types";
 
@@ -42,6 +42,9 @@ interface ControlBarProps {
   onCountryOnlyChange: (value: boolean) => void;
   country: string;
   onCountryChange: (code: string) => void;
+  /** Words to leave out of results, comma separated. */
+  exclude: string;
+  onExcludeChange: (value: string) => void;
 }
 
 export default function ControlBar(props: ControlBarProps) {
@@ -75,6 +78,8 @@ export default function ControlBar(props: ControlBarProps) {
     onCountryOnlyChange,
     country,
     onCountryChange,
+    exclude,
+    onExcludeChange,
   } = props;
 
   /** Digits only, so a stray letter or minus sign can't break the search. */
@@ -287,6 +292,22 @@ export default function ControlBar(props: ControlBarProps) {
             </span>
           )}
         </div>
+
+        <label className="inline-flex items-center gap-2">
+          <span className="inline-flex items-center gap-1 text-xs font-semibold uppercase tracking-wider text-zinc-400">
+            <Ban className="h-3.5 w-3.5" /> Exclude
+          </span>
+          <input
+            type="text"
+            aria-label="Words to exclude"
+            value={exclude}
+            onChange={(event) => onExcludeChange(event.target.value.slice(0, 120))}
+            placeholder="drill, knife, lighter"
+            maxLength={120}
+            className="field !w-44 !py-1 text-sm"
+            autoComplete="off"
+          />
+        </label>
 
         <div className="inline-flex items-center gap-2">
           <span className="text-xs font-semibold uppercase tracking-wider text-zinc-400">Price</span>

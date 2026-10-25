@@ -48,7 +48,13 @@ const ACCESSORY_TERMS = [
  */
 const MEDIA_AND_MERCH_TERMS = [
   "disc only",
-  "steel ?books?",
+  "steel ?(?:books?|box)",
+  "limited run",
+  "physical (?:copy|in box)",
+  "ea sports",
+  "bot lobby",
+  "thermal (?:paste|putty|pads?)",
+  "liquid metal",
   "dvds?",
   "blu-?rays?",
   "albums?",
@@ -96,6 +102,52 @@ const CONDITION_TERMS = ["for parts", "parts only", "not working", "broken", "cr
 
 const ACCESSORY = new RegExp(`\\b(?:${ACCESSORY_TERMS.join("|")})\\b`, "i");
 const CONDITION = new RegExp(`\\b(?:${CONDITION_TERMS.join("|")})\\b`, "i");
+/**
+ * Words dropshippers pile into one title to match every search ("Hand Drill Survival Gear Tool
+ * Jungle Camping Bushcraft Kit"). Any single one is normal; four different ones is stuffing.
+ */
+const STUFFING_TERMS = [
+  "multi-?functional?",
+  "multi-?tools?",
+  "portable",
+  "outdoor",
+  "tactical",
+  "survival",
+  "bushcraft",
+  "emergency",
+  "gadgets?",
+  "edc",
+  "kits?",
+  "tools?",
+  "gear",
+  "universal",
+  "durable",
+  "waterproof",
+  "lightweight",
+  "heavy[ -]duty",
+  "professional",
+  "premium",
+  "high[ -]quality",
+  "hot sale",
+  "fashion",
+  "creative",
+  "mini",
+];
+const STUFFING_REGEXES = STUFFING_TERMS.map((term) => new RegExp(`\\b(?:${term})\\b`, "i"));
+const STUFFING_MIN_DISTINCT = 4;
+
+/** True when a title strings together many generic marketing words. */
+export function isKeywordStuffed(text: string): boolean {
+  let hits = 0;
+  for (const pattern of STUFFING_REGEXES) {
+    if (pattern.test(text) && ++hits >= STUFFING_MIN_DISTINCT) return true;
+  }
+  return false;
+}
+
+const GAME_LISTING =
+  /\([^)]*\b(?:playstation|xbox|nintendo|switch|wii|ps\d)\b[^)]*,\s*(?:19|20)\d{2}\)/i;
+
 const WITH_EXTRAS = /\bwith\b|\bw\/|\bincludes?\b|\bincluding\b|\bplus\b|\+/i;
 const MEDIA_AND_MERCH = new RegExp(`\\b(?:${MEDIA_AND_MERCH_TERMS.join("|")})\\b`, "i");
 const PROTECTED = /\b(?:console|system|handheld)\b/i;
@@ -136,6 +188,10 @@ export function classifyTitle(title: string, query: string): Relevance {
   const rest = withoutQueryTerms(title, terms);
 
   if (CONDITION.test(rest)) return "junk";
+  // Words the shopper typed don't count ("camping gear" typed: "camping"/"gear" aren't stuffing).
+  if (isKeywordStuffed(rest)) return "junk";
+  // Video games are titled "<Game> (Sony PlayStation 5, 2026)": platform and year in brackets.
+  if (GAME_LISTING.test(rest)) return "junk";
 
   // Extras mentioned after "with" ("guitar with case and strap", "PSP with 10 games") are bonuses
   // that come WITH the item, not what the listing is; only the part before them counts.

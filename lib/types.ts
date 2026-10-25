@@ -46,6 +46,15 @@ export interface AuctionInfo {
 }
 
 /** A normalized listing, identical in shape regardless of which platform it came from. */
+/** Seller reputation, when the site publishes it (eBay does). */
+export interface SellerInfo {
+  name?: string;
+  /** Positive feedback, 0-100. */
+  feedbackPercent?: number;
+  /** Total feedback received (roughly, completed sales). */
+  feedbackCount?: number;
+}
+
 export interface Listing {
   id: string;
   title: string;
@@ -80,6 +89,7 @@ export interface Listing {
   isSample?: boolean;
   /** Plain-English breakdown of how dealScore was reached (shown in the card's "Why this score?"). */
   scoreReasons?: ScoreReason[];
+  seller?: SellerInfo;
 }
 
 export interface ScoreReason {
@@ -127,6 +137,8 @@ export interface ScrapeRequest {
   originLng?: number;
   /** Which home-page category to browse when `query` is blank (see lib/categories.ts). */
   category?: string;
+  /** Words or phrases to leave out, comma separated ("drill, knife, lighter"). */
+  exclude?: string;
 }
 
 export interface ScrapeMeta {
