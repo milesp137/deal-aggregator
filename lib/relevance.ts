@@ -48,6 +48,7 @@ const ACCESSORY_TERMS = [
  */
 const MEDIA_AND_MERCH_TERMS = [
   "disc only",
+  "steel ?books?",
   "dvds?",
   "blu-?rays?",
   "albums?",
@@ -77,6 +78,17 @@ const MEDIA_AND_MERCH_TERMS = [
   "saddles?",
   "tuning pegs?",
   "hangers?",
+  "pickup rings?",
+  "mounting rings?",
+  "pick ?guards?",
+  "scratch ?plates?",
+  "stands?",
+  "straps?",
+  "tuning machines?",
+  "machine heads?",
+  "(?:strat|stratocaster|tele|telecaster|lp|les paul) (?:body|neck)",
+  "(?:body|neck) only",
+  "bodies",
 ];
 
 /** Condition problems: unwanted for deal hunting even when the title says "console". */
@@ -84,7 +96,7 @@ const CONDITION_TERMS = ["for parts", "parts only", "not working", "broken", "cr
 
 const ACCESSORY = new RegExp(`\\b(?:${ACCESSORY_TERMS.join("|")})\\b`, "i");
 const CONDITION = new RegExp(`\\b(?:${CONDITION_TERMS.join("|")})\\b`, "i");
-const WITH_EXTRAS = /\bwith\b|\bw\/|\bincludes?\b|\bincluding\b|\bplus\b/i;
+const WITH_EXTRAS = /\bwith\b|\bw\/|\bincludes?\b|\bincluding\b|\bplus\b|\+/i;
 const MEDIA_AND_MERCH = new RegExp(`\\b(?:${MEDIA_AND_MERCH_TERMS.join("|")})\\b`, "i");
 const PROTECTED = /\b(?:console|system|handheld)\b/i;
 /** "Screen protector FOR psp": the thing being searched is only what the item is made for. */

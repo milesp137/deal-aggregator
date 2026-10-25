@@ -1,10 +1,22 @@
 export type SourcePlatform = "eBay" | "Marketplace" | "Craigs" | "ShopGoodwill" | "BaT" | "Reverb";
 
+/**
+ * Facebook Marketplace is switched OFF on the live site for now: it is not offered in the source
+ * picker, never searched (even by an old saved search or alert), and never sent to the scraper.
+ * All of its code (lib/facebook.ts, the Marketplace branch in app/api/scrape/route.ts) is kept so
+ * it can come back by flipping this to true.
+ */
+export const MARKETPLACE_ENABLED = false;
+
 /** Every platform that can be searched, in display order. */
-export const ALL_SOURCES: SourcePlatform[] = ["Marketplace", "eBay", "Craigs", "ShopGoodwill", "BaT", "Reverb"];
+export const ALL_SOURCES: SourcePlatform[] = (
+  ["Marketplace", "eBay", "Craigs", "ShopGoodwill", "BaT", "Reverb"] as SourcePlatform[]
+).filter((source) => MARKETPLACE_ENABLED || source !== "Marketplace");
 
 /** The sources that existed before ShopGoodwill, Bring a Trailer and Reverb were added. */
-export const ORIGINAL_SOURCES: SourcePlatform[] = ["Marketplace", "eBay", "Craigs"];
+export const ORIGINAL_SOURCES: SourcePlatform[] = (
+  ["Marketplace", "eBay", "Craigs"] as SourcePlatform[]
+).filter((source) => ALL_SOURCES.includes(source));
 
 export const SOURCE_NAMES: Record<SourcePlatform, string> = {
   Marketplace: "Facebook Marketplace",

@@ -53,8 +53,6 @@ interface SavedPrefs {
   minScore: number;
   hideScams: boolean;
   sort: SortMode;
-  minPrice: string;
-  maxPrice: string;
   countryOnly: boolean;
   country: string;
   category: string;
@@ -172,8 +170,8 @@ export default function DashboardPage() {
     if (typeof prefs.minScore === "number") setMinScore(prefs.minScore);
     if (typeof prefs.hideScams === "boolean") setHideScams(prefs.hideScams);
     if (prefs.sort && prefs.sort in SORT_LABELS) setSort(prefs.sort);
-    if (typeof prefs.minPrice === "string") setMinPrice(prefs.minPrice.replace(/\D/g, "").slice(0, 7));
-    if (typeof prefs.maxPrice === "string") setMaxPrice(prefs.maxPrice.replace(/\D/g, "").slice(0, 7));
+    // The price range belongs to one search, so it is NOT restored: a leftover "max $350" from a
+    // guitar search was hiding every wheel, GPU and car on the home page.
     if (typeof prefs.countryOnly === "boolean") setCountryOnly(prefs.countryOnly);
     if (isCountryCode(prefs.country)) setCountry(prefs.country);
     if (isCategoryId(prefs.category)) setCategory(prefs.category);
@@ -182,7 +180,7 @@ export default function DashboardPage() {
   }, []);
 
   usePersistPrefs(
-    { maxDistance, minScore, hideScams, sort, minPrice, maxPrice, countryOnly, country, category },
+    { maxDistance, minScore, hideScams, sort, countryOnly, country, category },
     prefsLoaded,
   );
 
@@ -432,9 +430,17 @@ export default function DashboardPage() {
 
   // Logo click: back to the default home view (blank search, results feed), scrolled to the top.
   const goHome = useCallback(() => {
-    paramsRef.current = { ...paramsRef.current, query: "", category: DEFAULT_CATEGORY.id };
+    paramsRef.current = {
+      ...paramsRef.current,
+      query: "",
+      category: DEFAULT_CATEGORY.id,
+      minPrice: "",
+      maxPrice: "",
+    };
     setQuery("");
     setCategory(DEFAULT_CATEGORY.id);
+    setMinPrice("");
+    setMaxPrice("");
     setShowSaved(false);
     setAlertsOpen(false);
     window.scrollTo({ top: 0, behavior: "smooth" });

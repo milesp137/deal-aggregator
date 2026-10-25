@@ -11,6 +11,8 @@ export interface Category {
   keywords: string[];
   /** Sites searched while browsing this category. A typed search always uses every site. */
   sources: SourcePlatform[];
+  /** Searches for just some sites, where the full list would make no sense (no PS5s on Reverb). */
+  siteKeywords?: Partial<Record<SourcePlatform, string[]>>;
   /** Rank "stand for PS5"-style listings after the item itself while browsing. */
   demoteMadeFor?: boolean;
 }
@@ -19,8 +21,11 @@ export const CATEGORIES: Category[] = [
   {
     id: "featured",
     label: "Featured",
-    keywords: ["240sx", "coilovers", "te37", "rtx 4090"],
-    sources: ["Marketplace", "eBay", "Craigs", "BaT"],
+    // A spread of the other categories, so the home page isn't one niche.
+    keywords: ["240sx", "te37", "rtx 4090", "iphone 15 pro", "ps5", "electric guitar"],
+    sources: ["Marketplace", "eBay", "Craigs", "BaT", "Reverb"],
+    siteKeywords: { BaT: ["240sx"], Reverb: ["electric guitar"] },
+    demoteMadeFor: true,
   },
   {
     id: "cars",

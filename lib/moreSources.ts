@@ -266,7 +266,12 @@ interface ReverbListing {
   published_at?: string;
   photos?: { _links?: { large_crop?: { href?: string }; full?: { href?: string } } }[];
   _links?: { web?: { href?: string } };
+  shop_name?: string | null;
+  shop?: { id?: string | number; name?: string } | null;
 }
+
+/** One shop can list dozens of near-identical items; show at most this many per search. */
+const REVERB_MAX_PER_SHOP = 2;
 
 export async function scrapeReverb(query: string, limit = 24): Promise<ListingDraft[]> {
   const url = new URL("https://reverb.com/api/listings");
@@ -283,9 +288,12 @@ export async function scrapeReverb(query: string, limit = 24): Promise<ListingDr
   if (!Array.isArray(data.listings)) throw new Error("Reverb returned an unexpected response");
 
   const drafts: ListingDraft[] = [];
+  const perShop = new Map<string, number>();
   for (const listing of data.listings) {
     if (drafts.length >= limit) break;
     if (listing.auction) continue; // the rare auction has no fixed price to compare
+    const shop = String(listing.shop_name ?? listing.shop?.name ?? listing.shop?.id ?? "");
+    if (shop && (perShop.get(shop) ?? 0) >= REVERB_MAX_PER_SHOP) continue;
     const title = decodeEntities(listing.title ?? "").trim();
     if (!title || !titleMatchesQuery(title, query)) continue;
 
@@ -300,6 +308,7 @@ export async function scrapeReverb(query: string, limit = 24): Promise<ListingDr
     const condition = listing.condition?.display_name;
     const body = stripHtml(listing.description ?? "").slice(0, 220);
 
+    if (shop) perShop.set(shop, (perShop.get(shop) ?? 0) + 1);
     drafts.push({
       id: `reverb-${listing.id}`,
       title,

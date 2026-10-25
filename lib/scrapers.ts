@@ -64,7 +64,8 @@ export function titleMatchesQuery(title: string, query: string): boolean {
     if (/^\d+$/.test(term)) return haystack.includes(term);
     // Anything with letters must START a word, so "ps5" no longer matches "FPS575".
     // One optional space or dash between characters keeps "240 SX" / "MX-5" working.
-    const pattern = term.split("").join("[ -]?");
+    // Not for 3-letter codes, or "ps5" would match the guitar pedal "Boss PS-5".
+    const pattern = term.split("").join(term.length > 3 ? "[ -]?" : "");
     // Short model codes ("ps5", "s14") must also END the word, so "ps5" skips "PS59C turntable".
     const end = term.length <= 3 ? "(?![a-z0-9])" : "";
     return new RegExp(`(?:^|[^a-z0-9])${pattern}${end}`).test(lower);
@@ -268,7 +269,9 @@ export async function scrapeEbay(query: string, limit = 20, country = ""): Promi
   const filters = ["buyingOptions:{FIXED_PRICE}", ...(/^[A-Z]{2}$/.test(country) ? [`itemLocationCountry:${country}`] : [])];
   const url =
     "https://api.ebay.com/buy/browse/v1/item_summary/search" +
-    `?q=${encodeURIComponent(query)}&limit=${limit}&sort=newlyListed&filter=${encodeURIComponent(filters.join(","))}`;
+    // No `sort` = eBay's "Best Match", which puts real guitars first. `sort=newlyListed` returned
+    // whatever was uploaded last, which for broad words is pickup rings, straps and stands.
+    `?q=${encodeURIComponent(query)}&limit=${limit}&filter=${encodeURIComponent(filters.join(","))}`;
   const response = await fetchWithTimeout(url, {
     headers: { Authorization: `Bearer ${token}`, "X-EBAY-C-MARKETPLACE-ID": "EBAY_US" },
   });

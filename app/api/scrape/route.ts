@@ -48,7 +48,7 @@ async function fetchSource<T>(produce: () => T): Promise<T> {
   return produce();
 }
 
-const DEFAULT_PER_KEYWORD_LIMIT = 6;
+const DEFAULT_PER_KEYWORD_LIMIT = 8;
 /** Typed searches fetch extra eBay results so the relevance filter has plenty to choose from. */
 const EBAY_SEARCH_LIMIT = 50;
 const SHOPGOODWILL_LIMIT = 20;
@@ -448,6 +448,8 @@ async function runScrape(request: Required<ScrapeRequest>, plan: Plan): Promise<
   const category = categoryById(request.category);
   const keywords = request.query ? [request.query] : category.keywords;
   const perKeywordLimit = request.query ? undefined : DEFAULT_PER_KEYWORD_LIMIT;
+  const keywordsFor = (platform: SourcePlatform) =>
+    request.query ? keywords : (category.siteKeywords?.[platform] ?? keywords);
 
   // Sources the user switched off are never contacted (faster, and saves proxy bandwidth).
   // The other sites only cover the US, so a non-US country means eBay only. While browsing a
@@ -471,7 +473,7 @@ async function runScrape(request: Required<ScrapeRequest>, plan: Plan): Promise<
           "eBay",
           isEbayConfigured()
             ? () =>
-              scrapeKeywords(keywords, (keyword) =>
+              scrapeKeywords(keywordsFor("eBay"), (keyword) =>
                 scrapeEbay(keyword, perKeywordLimit ?? EBAY_SEARCH_LIMIT, request.country),
               )
             : null,
@@ -483,7 +485,7 @@ async function runScrape(request: Required<ScrapeRequest>, plan: Plan): Promise<
       : liveOrSample(
           "Marketplace",
           () =>
-            scrapeKeywords(keywords, (keyword) =>
+            scrapeKeywords(keywordsFor("Marketplace"), (keyword) =>
               scrapeFacebookMarketplace(keyword, origin, perKeywordLimit),
             ),
           "Facebook Marketplace scraper unavailable",
@@ -495,7 +497,7 @@ async function runScrape(request: Required<ScrapeRequest>, plan: Plan): Promise<
       : liveOrSample(
           "Craigs",
           () =>
-            scrapeKeywords(keywords, (keyword) =>
+            scrapeKeywords(keywordsFor("Craigs"), (keyword) =>
               scrapeCraigslist(keyword, origin, perKeywordLimit),
             ),
           "Craigslist scraper unavailable",
@@ -506,7 +508,7 @@ async function runScrape(request: Required<ScrapeRequest>, plan: Plan): Promise<
       ? skipped()
       : liveOrSample(
           "ShopGoodwill",
-          () => scrapeKeywords(keywords, (keyword) => scrapeShopGoodwill(keyword, SHOPGOODWILL_LIMIT)),
+          () => scrapeKeywords(keywordsFor("ShopGoodwill"), (keyword) => scrapeShopGoodwill(keyword, perKeywordLimit ?? SHOPGOODWILL_LIMIT)),
           "ShopGoodwill scraper unavailable",
           noSample,
         ),
@@ -514,7 +516,7 @@ async function runScrape(request: Required<ScrapeRequest>, plan: Plan): Promise<
       ? skipped()
       : liveOrSample(
           "BaT",
-          () => scrapeKeywords(keywords, (keyword) => scrapeBringATrailer(keyword, perKeywordLimit ?? BAT_LIMIT)),
+          () => scrapeKeywords(keywordsFor("BaT"), (keyword) => scrapeBringATrailer(keyword, perKeywordLimit ?? BAT_LIMIT)),
           "Bring a Trailer scraper unavailable",
           noSample,
         ),
@@ -522,7 +524,7 @@ async function runScrape(request: Required<ScrapeRequest>, plan: Plan): Promise<
       ? skipped()
       : liveOrSample(
           "Reverb",
-          () => scrapeKeywords(keywords, (keyword) => scrapeReverb(keyword, REVERB_LIMIT)),
+          () => scrapeKeywords(keywordsFor("Reverb"), (keyword) => scrapeReverb(keyword, perKeywordLimit ?? REVERB_LIMIT)),
           "Reverb scraper unavailable",
           noSample,
         ),
@@ -628,8 +630,10 @@ async function runScrape(request: Required<ScrapeRequest>, plan: Plan): Promise<
       ? null
       : (peerReferences.get(groupOf(draft)) ??
         buildReference([], lookupMarket(draft.title)?.median ?? null));
+    // An accessory or part costing far less than the item itself is normal, not a scam sign.
     const lowPrice: LowPriceCheck | null =
       reference &&
+      relevanceTier(draft.id) === 0 &&
       (reference.source === "market" || (reference.peerPrices?.length ?? 0) >= MIN_PEERS_FOR_SCAM_CHECK)
         ? {
             median: reference.median,
