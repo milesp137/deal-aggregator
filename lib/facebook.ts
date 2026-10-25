@@ -186,7 +186,27 @@ export async function scrapeFacebookMarketplace(
   return drafts;
 }
 
+class NoListingsError extends Error {}
+
+/**
+ * Rotating residential proxies hand out a fresh IP per request, and Facebook only shows the
+ * login wall to some of them, so retry a few times when a proxy is configured.
+ */
 async function scrapeUncached(query: string, slug: string): Promise<ListingDraft[]> {
+  const attempts = process.env.SCRAPER_PROXY_URL ? 3 : 1;
+  let lastError: unknown;
+  for (let attempt = 1; attempt <= attempts; attempt++) {
+    try {
+      return await scrapeOnce(query, slug);
+    } catch (error) {
+      lastError = error;
+      if (!(error instanceof NoListingsError)) throw error;
+    }
+  }
+  throw lastError;
+}
+
+async function scrapeOnce(query: string, slug: string): Promise<ListingDraft[]> {
   const city = { slug };
   const url = query
     ? `https://www.facebook.com/marketplace/${city.slug}/search/?query=${encodeURIComponent(query)}`
@@ -209,7 +229,7 @@ async function scrapeUncached(query: string, slug: string): Promise<ListingDraft
   if (found.size === 0) {
     const title = $("title").first().text().trim().slice(0, 60) || "none";
     const loginWall = /log in|login|checkpoint/i.test(title) || html.includes('id="login_form"');
-    throw new Error(
+    throw new NoListingsError(
       `No Marketplace listings in page (${loginWall ? "login wall shown" : "no listing data"}; ` +
         `title "${title}", ${html.length} bytes, ${process.env.SCRAPER_PROXY_URL ? "via proxy" : "no proxy"}). ` +
         "Facebook likely blocks this server's IP.",
